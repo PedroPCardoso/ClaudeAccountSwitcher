@@ -60,7 +60,7 @@ public struct ClaudeUsageService: Sendable {
             quotas.append(ClaudeQuota(key: "Semanal \(model)", usedPercent: value.doubleValue, resetAt: (window["resets_at"] as? String).flatMap(iso.date)))
         }
         guard !quotas.isEmpty else { throw ClaudeUsageError.invalidResponse }
-        return ClaudeUsageSnapshot(plan: root["plan"] as? String ?? "Claude Pro/Max", quotas: quotas, source: "Anthropic OAuth (9router)")
+        return ClaudeUsageSnapshot(plan: root["plan"] as? String ?? "Claude Pro/Max", quotas: quotas, source: "Anthropic OAuth (Claude Code)")
     }
 
     private func accessToken(profileDirectory: URL) -> String? {
