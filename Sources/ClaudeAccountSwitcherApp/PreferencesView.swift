@@ -8,6 +8,7 @@ struct PreferencesView: View {
     let onRelogin: (Profile) -> Void
     let onRename: (Profile) -> Void
     let onRemove: (Profile) -> Void
+    let onUninstall: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -30,6 +31,16 @@ struct PreferencesView: View {
                     }
                 }
                 .listStyle(.inset)
+            }
+
+            Divider()
+            HStack {
+                Text("Os perfis e credenciais serão preservados ao desinstalar.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Desinstalar aplicativo…", role: .destructive) { onUninstall() }
+                    .buttonStyle(.bordered)
             }
         }
         .padding(20)

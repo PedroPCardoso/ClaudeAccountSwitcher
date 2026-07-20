@@ -154,7 +154,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 onActivate: { [weak self] profile in self?.activateFromPreferences(profile) },
                 onRelogin: { [weak self] profile in self?.reloginFromPreferences(profile) },
                 onRename: { [weak self] profile in self?.renameSpecificProfile(profile) },
-                onRemove: { [weak self] profile in self?.removeFromPreferences(profile) }
+                onRemove: { [weak self] profile in self?.removeFromPreferences(profile) },
+                onUninstall: { [weak self] in self?.uninstall() }
             )
         } else {
             preferencesWindowController?.update(profiles: profiles, activeID: activeID)
@@ -234,6 +235,30 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 rebuildMenu(); refreshPreferences(); notify("Perfil removido")
             } catch { showError(error) }
         }
+    }
+
+    private func uninstall() {
+        let alert = NSAlert()
+        alert.messageText = "Desinstalar Claude Account Switcher?"
+        alert.informativeText = "O aplicativo, o launcher e a integração do terminal serão removidos. Seus perfis, credenciais e dados em Library/Application Support serão preservados."
+        alert.addButton(withTitle: "Desinstalar")
+        alert.addButton(withTitle: "Cancelar")
+        alert.alertStyle = .warning
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            try shell.remove(home: home)
+            try? loginItem.setEnabled(false)
+            try? FileManager.default.removeItem(at: shell.launcherURL())
+            let bundle = Bundle.main.bundleURL
+            if bundle.path.hasPrefix("/Applications/") || bundle.path.hasPrefix(home.appendingPathComponent("Applications").path + "/") {
+                try? FileManager.default.removeItem(at: bundle)
+            }
+            preferencesWindowController?.close()
+            notify("Aplicativo desinstalado; seus perfis foram preservados")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
+        } catch { showError(error) }
     }
     @objc private func quit() { NSApp.terminate(nil) }
     private func notify(_ message: String) { let n = NSUserNotification(); n.title = "Claude Account Switcher"; n.informativeText = message; NSUserNotificationCenter.default.deliver(n) }
