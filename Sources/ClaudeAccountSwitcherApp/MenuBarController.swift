@@ -20,6 +20,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private let shell: ShellIntegrationManager
     private let locator: ClaudeLocator
     private let loginItem = LoginItemService()
+    private let paseo: PaseoIntegration
     private var preferencesWindowController: PreferencesWindowController?
     private var usageWindowController: UsageWindowController?
     private var usageRefreshTimer: Timer?
@@ -33,7 +34,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         auth = ClaudeAuthService(locator: locator)
         shell = ShellIntegrationManager(appSupport: root)
         migration = MigrationService(store: store)
-        activation = ActivationService(store: store)
+        paseo = PaseoIntegration(appSupport: root)
+        activation = ActivationService(store: store, paseoIntegration: paseo)
         super.init()
     }
 
@@ -53,7 +55,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             Task { @MainActor in self?.refreshProfileMetadata() }
         }
         if let official = try? locator.locate() { try? shell.install(home: FileManager.default.homeDirectoryForCurrentUser, officialBinary: official) }
-        if let active = try? store.active() { try? SystemLaunchdEnvironment().set(active.directory.path) }
+        if let active = try? store.active() { try? SystemLaunchdEnvironment().set(active.directory.path); try? paseo.updateSymlink(to: active.directory) }
         try? loginItem.setEnabled(true)
     }
 
@@ -196,6 +198,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             preferencesWindowController = PreferencesWindowController(
                 profiles: profiles,
                 activeID: activeID,
+                paseoDetected: paseo.isDetected(),
+                paseoConfigured: paseo.isConfigured(),
                 onActivate: { [weak self] profile in self?.activateFromPreferences(profile) },
                 onRelogin: { [weak self] profile in self?.reloginFromPreferences(profile) },
                 onRename: { [weak self] profile in self?.renameSpecificProfile(profile) },
@@ -203,20 +207,39 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 onUninstall: { [weak self] in self?.uninstall() },
                 onAdd: { [weak self] in self?.addAccount() },
                 onImport: { [weak self] in self?.importProfile() },
-                onMigrate: { [weak self] in self?.migrateExisting() }
+                onMigrate: { [weak self] in self?.migrateExisting() },
+                onIntegratePaseo: { [weak self] in self?.integratePaseo() }
             )
         } else {
-            preferencesWindowController?.update(profiles: profiles, activeID: activeID)
+            preferencesWindowController?.update(profiles: profiles, activeID: activeID, paseoDetected: paseo.isDetected(), paseoConfigured: paseo.isConfigured())
         }
         preferencesWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         refreshProfileMetadata()
     }
 
+    private func integratePaseo() {
+        guard paseo.isDetected() else {
+            showError(NSError(domain: "Claude Account Switcher", code: 5, userInfo: [NSLocalizedDescriptionKey: "Paseo não encontrado (~/.paseo/config.json ausente)."]))
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Integrar com Paseo?"
+        alert.informativeText = "O provider \"claude\" em ~/.paseo/config.json passará a usar um link estável mantido por este app, que sempre aponta para a conta ativa. O arquivo original é copiado para Backups antes da alteração; outros providers (como \"claude-work\") não são tocados.\n\nDepois de integrar, rode \"paseo daemon restart\" no terminal uma única vez para o Paseo carregar a mudança. Trocas de conta seguintes não vão exigir reiniciar o daemon de novo."
+        alert.addButton(withTitle: "Integrar"); alert.addButton(withTitle: "Cancelar")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            if let active = try? store.active() { try? paseo.updateSymlink(to: active.directory) }
+            let backup = try paseo.integrate()
+            refreshPreferences()
+            notify("Paseo integrado — rode \"paseo daemon restart\" no terminal para aplicar. Backup: \(backup.lastPathComponent)")
+        } catch { showError(error) }
+    }
+
     private func refreshPreferences() {
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
-        preferencesWindowController?.update(profiles: profiles, activeID: activeID)
+        preferencesWindowController?.update(profiles: profiles, activeID: activeID, paseoDetected: paseo.isDetected(), paseoConfigured: paseo.isConfigured())
         usageWindowController?.update(profiles: profiles, activeID: activeID)
     }
 

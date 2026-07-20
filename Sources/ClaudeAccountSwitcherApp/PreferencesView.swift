@@ -4,6 +4,8 @@ import ClaudeAccountSwitcherCore
 struct PreferencesView: View {
     let profiles: [Profile]
     let activeID: UUID?
+    let paseoDetected: Bool
+    let paseoConfigured: Bool
     let onActivate: (Profile) -> Void
     let onRelogin: (Profile) -> Void
     let onRename: (Profile) -> Void
@@ -12,6 +14,7 @@ struct PreferencesView: View {
     let onAdd: () -> Void
     let onImport: () -> Void
     let onMigrate: () -> Void
+    let onIntegratePaseo: () -> Void
 
     @AppStorage(FiveHourAlertThreshold.defaultsKey) private var fiveHourThreshold: Double = FiveHourAlertThreshold.default
     @AppStorage(FiveHourAlertSound.defaultsKey) private var fiveHourSoundRaw: String = FiveHourAlertSound.default.rawValue
@@ -55,6 +58,20 @@ struct PreferencesView: View {
                 Text(AppStrings.t("Reabrir o app nativo do Claude ao trocar de conta", "Reopen the native Claude app when switching accounts"))
             }
             .help(AppStrings.t("Desativado por padrão. O terminal troca de conta sem reabrir o app nativo.", "Off by default. The terminal switches accounts without reopening the native app."))
+
+            if paseoDetected {
+                HStack(spacing: 8) {
+                    Button(paseoConfigured ? AppStrings.t("Reconfigurar integração com Paseo…", "Reconfigure Paseo integration…") : AppStrings.t("Integrar com Paseo…", "Integrate with Paseo…")) { onIntegratePaseo() }
+                        .buttonStyle(.bordered)
+                    if paseoConfigured {
+                        Text(AppStrings.t("Paseo já segue a conta ativa", "Paseo already follows the active account"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text(AppStrings.t("Paseo detectado — sessões novas ainda não seguem a troca de conta", "Paseo detected — new sessions don't follow account switches yet"))
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                }
+            }
 
             Divider()
             HStack {

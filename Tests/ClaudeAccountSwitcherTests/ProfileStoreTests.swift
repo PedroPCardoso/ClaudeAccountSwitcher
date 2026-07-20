@@ -41,6 +41,11 @@ enum ProfileStoreTests {
             ,("5h alert sound falls back to default when unknown", testFiveHourAlertSound)
             ,("usage reset date parses fractional and plain ISO timestamps", testUsageResetDateParsing)
             ,("activation skips desktop sync when disabled", testActivationSkipsDesktopWhenDisabled)
+            ,("paseo integration is not detected without a config file", testPaseoNotDetectedWithoutConfig)
+            ,("paseo symlink re-targets atomically on repeated switches", testPaseoSymlinkRetargets)
+            ,("paseo integrate points the claude provider at the symlink and preserves other providers", testPaseoIntegrateSetsClaudeProviderEnv)
+            ,("paseo integrate backs up the original config before writing", testPaseoIntegrateBacksUpOriginal)
+            ,("activation updates the paseo symlink alongside launchd", testActivationUpdatesPaseoSymlink)
         ]
         var failures = 0
         for (name, test) in tests {
@@ -80,6 +85,70 @@ enum ProfileStoreTests {
         try check(plain != nil, "plain ISO timestamp should still parse")
         try check(ClaudeUsageService.parseResetDate(nil) == nil, "nil should stay nil")
         try check(ClaudeUsageService.parseResetDate("not a date") == nil, "garbage should not parse")
+    }
+
+    static func testPaseoNotDetectedWithoutConfig() throws {
+        let root = try temporaryRoot()
+        let paseo = PaseoIntegration(appSupport: root.appendingPathComponent("app-support"), paseoHome: root.appendingPathComponent(".paseo"))
+        try check(!paseo.isDetected(), "should not detect paseo without a config.json")
+        try check(!paseo.isConfigured(), "should not report configured without a config.json")
+    }
+
+    static func testPaseoSymlinkRetargets() throws {
+        let root = try temporaryRoot()
+        let appSupport = root.appendingPathComponent("app-support")
+        let paseo = PaseoIntegration(appSupport: appSupport, paseoHome: root.appendingPathComponent(".paseo"))
+        let first = root.appendingPathComponent("profile-a"); try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        let second = root.appendingPathComponent("profile-b"); try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        try paseo.updateSymlink(to: first)
+        try check(try FileManager.default.destinationOfSymbolicLink(atPath: paseo.activeConfigDirSymlink.path) == first.path, "symlink did not target the first profile")
+        try paseo.updateSymlink(to: second)
+        try check(try FileManager.default.destinationOfSymbolicLink(atPath: paseo.activeConfigDirSymlink.path) == second.path, "symlink did not re-target the second profile")
+    }
+
+    static func testPaseoIntegrateSetsClaudeProviderEnv() throws {
+        let root = try temporaryRoot()
+        let paseoHome = root.appendingPathComponent(".paseo"); try FileManager.default.createDirectory(at: paseoHome, withIntermediateDirectories: true)
+        let original = """
+        {"version":1,"agents":{"providers":{"claude-work":{"extends":"claude","env":{"CLAUDE_CONFIG_DIR":"/Users/x/.claude-work"}}}}}
+        """
+        try original.data(using: .utf8)!.write(to: paseoHome.appendingPathComponent("config.json"))
+        let paseo = PaseoIntegration(appSupport: root.appendingPathComponent("app-support"), paseoHome: paseoHome)
+        try check(!paseo.isConfigured(), "should not be configured before integrate() runs")
+        try paseo.integrate()
+        try check(paseo.isConfigured(), "should be configured after integrate() runs")
+        let raw = try Data(contentsOf: paseoHome.appendingPathComponent("config.json"))
+        let root2 = try JSONSerialization.jsonObject(with: raw) as! [String: Any]
+        let providers = ((root2["agents"] as! [String: Any])["providers"] as! [String: Any])
+        let claudeWorkEnv = ((providers["claude-work"] as! [String: Any])["env"] as! [String: Any])
+        try check(claudeWorkEnv["CLAUDE_CONFIG_DIR"] as? String == "/Users/x/.claude-work", "existing claude-work provider was modified")
+        let claudeEnv = ((providers["claude"] as! [String: Any])["env"] as! [String: Any])
+        try check(claudeEnv["CLAUDE_CONFIG_DIR"] as? String == paseo.activeConfigDirSymlink.path, "claude provider was not pointed at the stable symlink")
+    }
+
+    static func testPaseoIntegrateBacksUpOriginal() throws {
+        let root = try temporaryRoot()
+        let paseoHome = root.appendingPathComponent(".paseo"); try FileManager.default.createDirectory(at: paseoHome, withIntermediateDirectories: true)
+        let original = #"{"version":1}"#
+        try original.data(using: .utf8)!.write(to: paseoHome.appendingPathComponent("config.json"))
+        let appSupport = root.appendingPathComponent("app-support")
+        let paseo = PaseoIntegration(appSupport: appSupport, paseoHome: paseoHome)
+        let backup = try paseo.integrate()
+        try check(FileManager.default.fileExists(atPath: backup.path), "backup file was not created")
+        let backedUp = try String(contentsOf: backup, encoding: .utf8)
+        try check(backedUp == original, "backup did not preserve the original content")
+    }
+
+    static func testActivationUpdatesPaseoSymlink() async throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root)
+        let directory = root.appendingPathComponent("config"); try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let profile = Profile(name: "Work", directory: directory); try store.save(profile)
+        let paseo = PaseoIntegration(appSupport: root.appendingPathComponent("app-support"), paseoHome: root.appendingPathComponent(".paseo"))
+        let desktopClient = FakeDesktopAppClient()
+        let service = ActivationService(store: store, launchd: FakeLaunchd(), desktopActivator: DesktopAppActivator(client: desktopClient), paseoIntegration: paseo)
+        _ = try await service.activate(profile)
+        try check(try FileManager.default.destinationOfSymbolicLink(atPath: paseo.activeConfigDirSymlink.path) == directory.path, "activation did not update the paseo symlink")
+        try? FileManager.default.removeItem(at: profile.desktopDirectory)
     }
 
     static func temporaryRoot() throws -> URL {

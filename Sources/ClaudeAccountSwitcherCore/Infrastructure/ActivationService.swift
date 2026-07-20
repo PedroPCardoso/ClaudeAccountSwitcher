@@ -11,8 +11,9 @@ public actor ActivationService {
     private let store: ProfileStore
     private let launchd: LaunchdEnvironmentClient
     private let desktopActivator: DesktopAppActivator
-    public init(store: ProfileStore, launchd: LaunchdEnvironmentClient = SystemLaunchdEnvironment(), desktopActivator: DesktopAppActivator = DesktopAppActivator()) {
-        self.store = store; self.launchd = launchd; self.desktopActivator = desktopActivator
+    private let paseoIntegration: PaseoIntegration?
+    public init(store: ProfileStore, launchd: LaunchdEnvironmentClient = SystemLaunchdEnvironment(), desktopActivator: DesktopAppActivator = DesktopAppActivator(), paseoIntegration: PaseoIntegration? = nil) {
+        self.store = store; self.launchd = launchd; self.desktopActivator = desktopActivator; self.paseoIntegration = paseoIntegration
     }
 
     public func activate(_ profile: Profile, syncDesktopApp: Bool = true) async throws -> ActivationResult {
@@ -22,6 +23,7 @@ public actor ActivationService {
         do {
             try store.setActive(ActiveProfile(id: profile.id, directory: profile.directory))
             try launchd.set(profile.directory.path)
+            try? paseoIntegration?.updateSymlink(to: profile.directory)
             var candidate = profile; candidate.lastUsedAt = .now; candidate.health = .ready; try store.save(candidate)
             updated = candidate
         } catch {
