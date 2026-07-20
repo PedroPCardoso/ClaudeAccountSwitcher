@@ -61,20 +61,29 @@ public struct ClaudeUsageService: Sendable {
     private func parse(data: Data) throws -> ClaudeUsageSnapshot {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw ClaudeUsageError.invalidResponse }
         var quotas: [ClaudeQuota] = []
-        let iso = ISO8601DateFormatter()
         if let five = root["five_hour"] as? [String: Any], let value = five["utilization"] as? NSNumber {
-            quotas.append(ClaudeQuota(key: "Janela 5h", usedPercent: value.doubleValue, resetAt: (five["resets_at"] as? String).flatMap(iso.date)))
+            quotas.append(ClaudeQuota(key: "Janela 5h", usedPercent: value.doubleValue, resetAt: Self.parseResetDate(five["resets_at"] as? String)))
         }
         if let seven = root["seven_day"] as? [String: Any], let value = seven["utilization"] as? NSNumber {
-            quotas.append(ClaudeQuota(key: "Semanal", usedPercent: value.doubleValue, resetAt: (seven["resets_at"] as? String).flatMap(iso.date)))
+            quotas.append(ClaudeQuota(key: "Semanal", usedPercent: value.doubleValue, resetAt: Self.parseResetDate(seven["resets_at"] as? String)))
         }
         for (key, raw) in root where key.hasPrefix("seven_day_") {
             guard let window = raw as? [String: Any], let value = window["utilization"] as? NSNumber else { continue }
             let model = key.replacingOccurrences(of: "seven_day_", with: "").capitalized
-            quotas.append(ClaudeQuota(key: "Semanal \(model)", usedPercent: value.doubleValue, resetAt: (window["resets_at"] as? String).flatMap(iso.date)))
+            quotas.append(ClaudeQuota(key: "Semanal \(model)", usedPercent: value.doubleValue, resetAt: Self.parseResetDate(window["resets_at"] as? String)))
         }
         guard !quotas.isEmpty else { throw ClaudeUsageError.invalidResponse }
         return ClaudeUsageSnapshot(plan: root["plan"] as? String ?? "Claude Pro/Max", quotas: quotas, source: "Anthropic OAuth (Claude Code)")
+    }
+
+    /// The usage endpoint returns `resets_at` with fractional seconds
+    /// (e.g. `2026-07-20T22:40:00.121846+00:00`), which the default `ISO8601DateFormatter`
+    /// rejects. Try the fractional format first, then fall back to the plain one.
+    public static func parseResetDate(_ string: String?) -> Date? {
+        guard let string else { return nil }
+        let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: string) { return date }
+        return ISO8601DateFormatter().date(from: string)
     }
 
     public func tokenUsage(profileDirectory: URL) -> ClaudeTokenUsage {
