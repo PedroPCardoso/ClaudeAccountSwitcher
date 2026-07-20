@@ -24,6 +24,10 @@ enum ProfileStoreTests {
             ,("legacy active state is migrated", testLegacyActiveState)
             ,("launcher selects active profile", testLauncher)
             ,("system desktop app client resolves the bundle identifier constant", testSystemDesktopAppClientBundleIdentifier)
+            ,("desktop activator skips when the app is not installed", testDesktopActivatorSkipsWhenAppMissing)
+            ,("desktop activator terminates the running app then launches with the profile directory", testDesktopActivatorTerminatesAndLaunches)
+            ,("desktop activator reports failure when termination times out", testDesktopActivatorReportsTerminationFailure)
+            ,("desktop activator reports failure when launch throws", testDesktopActivatorReportsLaunchFailure)
         ]
         var failures = 0
         for (name, test) in tests {
@@ -178,5 +182,60 @@ enum ProfileStoreTests {
 
     static func testSystemDesktopAppClientBundleIdentifier() throws {
         try check(SystemDesktopAppClient.bundleIdentifier == "com.anthropic.claudefordesktop", "desktop app bundle identifier changed unexpectedly")
+    }
+
+    final class FakeDesktopAppClient: DesktopAppClient, @unchecked Sendable {
+        var bundleURL: URL? = URL(fileURLWithPath: "/Applications/Claude.app")
+        var running = true
+        var terminateSucceeds = true
+        var launchError: Error?
+        var terminateCallCount = 0
+        var launchedWith: (bundleURL: URL, userDataDirectory: URL)?
+
+        func locateBundle() -> URL? { bundleURL }
+        func isRunning() -> Bool { running }
+        func terminate(timeout: TimeInterval) -> Bool { terminateCallCount += 1; if terminateSucceeds { running = false }; return terminateSucceeds }
+        func launch(bundleURL: URL, userDataDirectory: URL) throws {
+            if let launchError { throw launchError }
+            launchedWith = (bundleURL, userDataDirectory)
+        }
+    }
+
+    static func testDesktopActivatorSkipsWhenAppMissing() async throws {
+        let client = FakeDesktopAppClient(); client.bundleURL = nil
+        let activator = DesktopAppActivator(client: client)
+        let profile = Profile(name: "Work", directory: URL(fileURLWithPath: "/tmp/Profiles/id/config"))
+        let result = await activator.sync(to: profile)
+        try check(result == .skipped(.appNotInstalled), "expected skip when the desktop app is not installed")
+        try check(client.launchedWith == nil, "launch should not be attempted when the app is not installed")
+    }
+
+    static func testDesktopActivatorTerminatesAndLaunches() async throws {
+        let client = FakeDesktopAppClient(); client.running = true
+        let activator = DesktopAppActivator(client: client)
+        let profile = Profile(name: "Work", directory: URL(fileURLWithPath: "/tmp/Profiles/id/config"))
+        let result = await activator.sync(to: profile)
+        try check(result == .synced, "expected a successful sync")
+        try check(client.terminateCallCount == 1, "the running instance was not terminated before relaunching")
+        try check(client.launchedWith?.userDataDirectory.path == profile.desktopDirectory.path, "launch did not target the profile's desktop directory")
+        try check(FileManager.default.fileExists(atPath: profile.desktopDirectory.path), "desktop directory was not created before launch")
+        try? FileManager.default.removeItem(at: profile.desktopDirectory)
+    }
+
+    static func testDesktopActivatorReportsTerminationFailure() async throws {
+        let client = FakeDesktopAppClient(); client.running = true; client.terminateSucceeds = false
+        let activator = DesktopAppActivator(client: client)
+        let profile = Profile(name: "Work", directory: URL(fileURLWithPath: "/tmp/Profiles/id/config"))
+        let result = await activator.sync(to: profile)
+        guard case .failed = result else { throw TestFailure.failed("expected a failure result when termination times out, got \(result)") }
+        try check(client.launchedWith == nil, "launch should not be attempted when termination fails")
+    }
+
+    static func testDesktopActivatorReportsLaunchFailure() async throws {
+        let client = FakeDesktopAppClient(); client.running = false; client.launchError = TestFailure.failed("boom")
+        let activator = DesktopAppActivator(client: client)
+        let profile = Profile(name: "Work", directory: URL(fileURLWithPath: "/tmp/Profiles/id/config"))
+        let result = await activator.sync(to: profile)
+        guard case .failed = result else { throw TestFailure.failed("expected a failure result when launch throws, got \(result)") }
     }
 }
