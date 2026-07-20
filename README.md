@@ -8,7 +8,7 @@ Download direto: [Claude-Account-Switcher-1.2.0.dmg](https://github.com/PedroPCa
 
 ### Uso real Pro/Max
 
-Nas Preferências, o app consulta a cota OAuth do Claude Code (janela de 5 horas e semanal) usando o mesmo endpoint adotado pelo 9router. Quando o perfil usa 9router, a conexão OAuth local em `~/.9router/db/data.sqlite` é usada apenas se existir uma única conexão Claude ativa; com várias conexões, cada perfil precisa ter seu próprio token OAuth. O endpoint é de consumidor e pode mudar sem aviso.
+Nas Preferências e ao passar o mouse sobre cada conta no menu da barra, o app consulta diretamente a cota OAuth do Claude Code (janela de 5 horas e semanal). Cada perfil usa exclusivamente a credencial armazenada no Keychain do próprio diretório `CLAUDE_CONFIG_DIR`; nenhuma instalação de 9router ou outro gateway é necessária. A consulta usa um endpoint de consumidor da Anthropic e pode mudar sem aviso.
 
 ## Estado atual
 

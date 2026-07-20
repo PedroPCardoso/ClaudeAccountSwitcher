@@ -31,7 +31,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "person.2.circle", accessibilityDescription: "Claude accounts")
-        installShortcutMonitor(); rebuildMenu()
+        installShortcutMonitor(); rebuildMenu(); refreshProfileMetadata()
         if let official = try? locator.locate() { try? shell.install(home: FileManager.default.homeDirectoryForCurrentUser, officialBinary: official) }
         if let active = try? store.active() { try? SystemLaunchdEnvironment().set(active.directory.path) }
         try? loginItem.setEnabled(true)
@@ -46,7 +46,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         } else {
             for profile in profiles {
                 let item = NSMenuItem(title: profile.name + (profile.email.map { " — \($0)" } ?? ""), action: #selector(selectProfile(_:)), keyEquivalent: "")
-                item.target = self; item.representedObject = profile; item.state = profile.id == active ? .on : .off; menu.addItem(item)
+                item.target = self; item.representedObject = profile; item.state = profile.id == active ? .on : .off
+                item.toolTip = usageTooltip(for: profile)
+                menu.addItem(item)
             }
         }
         menu.addItem(.separator()); menu.addItem(withTitle: "Adicionar conta…", action: #selector(addAccount), keyEquivalent: ""); menu.items.last?.target = self
@@ -191,6 +193,18 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             }
             await MainActor.run { self.rebuildMenu(); self.refreshPreferences() }
         }
+    }
+
+    private func usageTooltip(for profile: Profile) -> String {
+        guard let usage = profile.usage, !usage.quotas.isEmpty else {
+            return "Uso indisponível — faça login novamente nesta conta para consultar as cotas."
+        }
+        let formatter = DateFormatter(); formatter.dateStyle = .none; formatter.timeStyle = .short
+        let lines = usage.quotas.map { quota in
+            let reset = quota.resetAt.map { "renova às \(formatter.string(from: $0))" } ?? "renovação indisponível"
+            return "\(quota.key): \(Int(quota.usedPercent.rounded()))% usado (\(reset))"
+        }
+        return ([usage.plan ?? "Claude Pro/Max"] + lines + ["Fonte: Claude Code OAuth"]).joined(separator: "\n")
     }
 
     private func activateFromPreferences(_ profile: Profile) {

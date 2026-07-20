@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public struct ClaudeQuota: Codable, Equatable, Sendable {
     public let key: String
@@ -63,22 +64,20 @@ public struct ClaudeUsageService: Sendable {
     }
 
     private func accessToken(profileDirectory: URL) -> String? {
-        let settings = profileDirectory.appendingPathComponent("settings.json")
-        if let data = try? Data(contentsOf: settings),
-           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let env = root["env"] as? [String: Any],
-           let token = env["ANTHROPIC_AUTH_TOKEN"] as? String,
-           token.hasPrefix("sk-ant-oat") { return token }
-        // 9router keeps OAuth credentials in a local SQLite database. This
-        // fallback is only used when there is exactly one Claude connection,
-        // avoiding an arbitrary account match in multi-account setups.
-        let db = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".9router/db/data.sqlite")
-        guard FileManager.default.fileExists(atPath: db.path) else { return nil }
+        let digest = SHA256.hash(data: Data(profileDirectory.standardizedFileURL.path.utf8))
+        let suffix = digest.prefix(4).map { String(format: "%02x", $0) }.joined()
+        let service = "Claude Code-credentials-\(suffix)"
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = [db.path, "SELECT json_extract(data, '$.accessToken') FROM providerConnections WHERE provider='claude' AND authType='oauth' AND isActive=1;"]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["find-generic-password", "-s", service, "-a", NSUserName(), "-w"]
         let pipe = Pipe(); process.standardOutput = pipe; process.standardError = Pipe()
         try? process.run(); process.waitUntilExit()
-        let values = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.split(whereSeparator: { $0 == "\n" }).map(String.init).filter { !$0.isEmpty } ?? []
-        return values.count == 1 ? values[0] : nil
+        guard process.terminationStatus == 0,
+              let raw = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let data = raw.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let token = root["accessToken"] as? String { return token }
+        if let oauth = root["claudeAiOauth"] as? [String: Any], let token = oauth["accessToken"] as? String { return token }
+        return nil
     }
 }
