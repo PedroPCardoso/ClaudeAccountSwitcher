@@ -23,6 +23,7 @@ enum ProfileStoreTests {
             ,("migration preserves hidden Claude files", testMigration)
             ,("legacy active state is migrated", testLegacyActiveState)
             ,("launcher selects active profile", testLauncher)
+            ,("system desktop app client resolves the bundle identifier constant", testSystemDesktopAppClientBundleIdentifier)
         ]
         var failures = 0
         for (name, test) in tests {
@@ -173,5 +174,9 @@ enum ProfileStoreTests {
         try check(active?.directory.path == profileDir.path, "legacy active profile was not resolved")
         let migrated = String(data: try Data(contentsOf: store.activeURL), encoding: .utf8) ?? ""
         try check(migrated.contains("profile with spaces") && !migrated.contains("%20"), "active path was not migrated to a plain path")
+    }
+
+    static func testSystemDesktopAppClientBundleIdentifier() throws {
+        try check(SystemDesktopAppClient.bundleIdentifier == "com.anthropic.claudefordesktop", "desktop app bundle identifier changed unexpectedly")
     }
 }
