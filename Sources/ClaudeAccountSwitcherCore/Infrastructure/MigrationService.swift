@@ -1,19 +1,37 @@
 import Foundation
 import CryptoKit
 
-public struct MigrationPlan: Sendable { public let sources: [URL]; public let aliases: [String]; public init(sources: [URL], aliases: [String]) { self.sources = sources; self.aliases = aliases } }
+public struct MigrationPlan: Sendable {
+    public let sources: [URL]
+    public let aliases: [String]
+    public let desktopSource: URL?
+    public init(sources: [URL], aliases: [String], desktopSource: URL? = nil) { self.sources = sources; self.aliases = aliases; self.desktopSource = desktopSource }
+}
 public struct MigrationReport: Sendable { public let imported: [URL]; public let backups: [URL]; public let aliases: [String] }
 
 public struct MigrationService: Sendable {
     public let store: ProfileStore
     public init(store: ProfileStore) { self.store = store }
+
     public func preview(home: URL) throws -> MigrationPlan {
         let fm = FileManager.default
         let candidates = [home.appendingPathComponent(".claude"), home.appendingPathComponent(".claude-work")].filter { fm.fileExists(atPath: $0.path) }
         let zshrc = (try? String(contentsOf: home.appendingPathComponent(".zshrc"), encoding: .utf8)) ?? ""
-        return MigrationPlan(sources: candidates, aliases: zshrc.components(separatedBy: .newlines).filter { $0.contains("alias claude-work=") || $0.contains("alias code-work=") || $0.contains("alias zed-work=") })
+        let desktopAppData = home.appendingPathComponent("Library/Application Support/Claude")
+        let desktopSource = MigrationService.hasRealDesktopSession(at: desktopAppData) ? desktopAppData : nil
+        return MigrationPlan(sources: candidates, aliases: zshrc.components(separatedBy: .newlines).filter { $0.contains("alias claude-work=") || $0.contains("alias code-work=") || $0.contains("alias zed-work=") }, desktopSource: desktopSource)
     }
-    public func execute(_ plan: MigrationPlan) throws -> MigrationReport {
+
+    static func hasRealDesktopSession(at directory: URL) -> Bool {
+        let fm = FileManager.default
+        let cookies = directory.appendingPathComponent("Cookies")
+        if let attributes = try? fm.attributesOfItem(atPath: cookies.path), let size = attributes[.size] as? Int, size > 0 { return true }
+        let localStorage = directory.appendingPathComponent("Local Storage/leveldb")
+        if let entries = try? fm.contentsOfDirectory(atPath: localStorage.path), !entries.isEmpty { return true }
+        return false
+    }
+
+    public func execute(_ plan: MigrationPlan, desktopTarget: URL? = nil) throws -> MigrationReport {
         let fm = FileManager.default; var imported: [URL] = []
         for source in plan.sources {
             let id = UUID(); let destination = try store.createManagedDirectory(id: id)
@@ -24,6 +42,15 @@ public struct MigrationService: Sendable {
             }
             try store.save(Profile(id: id, name: source.lastPathComponent == ".claude" ? "Claude pessoal" : "Claude work", kind: .custom, directory: destination, health: .unknown))
             imported.append(destination)
+            if let desktopSource = plan.desktopSource, source.path == desktopTarget?.path {
+                let desktopDestination = destination.deletingLastPathComponent().appendingPathComponent("desktop", isDirectory: true)
+                try fm.createDirectory(at: desktopDestination, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                let desktopEntries = try fm.contentsOfDirectory(at: desktopSource, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [])
+                for entry in desktopEntries {
+                    if (try entry.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true { throw NSError(domain: "ClaudeAccountSwitcher", code: 1001, userInfo: [NSLocalizedDescriptionKey: "symbolic links are not imported"]) }
+                    try fm.copyItem(at: entry, to: desktopDestination.appendingPathComponent(entry.lastPathComponent))
+                }
+            }
         }
         return MigrationReport(imported: imported, backups: [], aliases: plan.aliases)
     }

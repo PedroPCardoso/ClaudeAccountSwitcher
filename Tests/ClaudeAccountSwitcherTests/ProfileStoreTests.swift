@@ -30,6 +30,9 @@ enum ProfileStoreTests {
             ,("desktop activator reports failure when launch throws", testDesktopActivatorReportsLaunchFailure)
             ,("activation syncs the desktop app after a successful CLI switch", testActivationSyncsDesktopApp)
             ,("a desktop app sync failure does not roll back the CLI switch", testActivationDesktopFailureDoesNotRollBackCLI)
+            ,("migration detects a real desktop app session but not an empty one", testMigrationDetectsDesktopSession)
+            ,("migration imports the desktop app session into the chosen profile", testMigrationImportsDesktopSession)
+            ,("migration preview finds no desktop session when the folder is absent", testMigrationNoDesktopSessionWhenAbsent)
         ]
         var failures = 0
         for (name, test) in tests {
@@ -149,6 +152,47 @@ enum ProfileStoreTests {
         let copied = report.imported[0].appendingPathComponent(".claude.json")
         try check(FileManager.default.fileExists(atPath: copied.path), "hidden config was not migrated")
         try check(FileManager.default.fileExists(atPath: source.appendingPathComponent(".claude.json").path), "source was modified")
+    }
+
+    static func testMigrationDetectsDesktopSession() throws {
+        let home = try temporaryRoot()
+        let desktopDir = home.appendingPathComponent("Library/Application Support/Claude")
+        try FileManager.default.createDirectory(at: desktopDir, withIntermediateDirectories: true)
+        try "config only, no session".write(to: desktopDir.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        let emptyStore = try ProfileStore(root: home.appendingPathComponent("managed-empty"))
+        let emptyPlan = try MigrationService(store: emptyStore).preview(home: home)
+        try check(emptyPlan.desktopSource == nil, "a config.json-only directory should not be treated as a real session")
+
+        try "cookie-bytes".write(to: desktopDir.appendingPathComponent("Cookies"), atomically: true, encoding: .utf8)
+        let store = try ProfileStore(root: home.appendingPathComponent("managed"))
+        let plan = try MigrationService(store: store).preview(home: home)
+        try check(plan.desktopSource?.path == desktopDir.path, "a directory with a non-empty Cookies file should be treated as a real session")
+    }
+
+    static func testMigrationImportsDesktopSession() throws {
+        let home = try temporaryRoot()
+        let source = home.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try "cli config".write(to: source.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        let desktopDir = home.appendingPathComponent("Library/Application Support/Claude")
+        try FileManager.default.createDirectory(at: desktopDir, withIntermediateDirectories: true)
+        try "cookie-bytes".write(to: desktopDir.appendingPathComponent("Cookies"), atomically: true, encoding: .utf8)
+
+        let store = try ProfileStore(root: home.appendingPathComponent("managed"))
+        let service = MigrationService(store: store)
+        let plan = try service.preview(home: home)
+        let report = try service.execute(plan, desktopTarget: source)
+
+        let importedDesktopDir = report.imported[0].deletingLastPathComponent().appendingPathComponent("desktop")
+        try check(FileManager.default.fileExists(atPath: importedDesktopDir.appendingPathComponent("Cookies").path), "desktop session was not copied into the target profile's desktop directory")
+        try check(FileManager.default.fileExists(atPath: desktopDir.appendingPathComponent("Cookies").path), "original desktop app data was modified or removed")
+    }
+
+    static func testMigrationNoDesktopSessionWhenAbsent() throws {
+        let home = try temporaryRoot()
+        let store = try ProfileStore(root: home.appendingPathComponent("managed"))
+        let plan = try MigrationService(store: store).preview(home: home)
+        try check(plan.desktopSource == nil, "no desktop source should be found when the default data directory does not exist")
     }
 
     static func testLauncher() throws {
