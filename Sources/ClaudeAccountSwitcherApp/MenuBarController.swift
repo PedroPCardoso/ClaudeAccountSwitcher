@@ -50,16 +50,15 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 item.target = self; item.representedObject = profile; item.state = profile.id == active ? .on : .off
                 item.toolTip = usageTooltip(for: profile)
                 menu.addItem(item)
+                let usage = NSMenuItem(title: usageSummary(for: profile), action: nil, keyEquivalent: "")
+                usage.isEnabled = false; usage.indentationLevel = 1; menu.addItem(usage)
             }
         }
-        menu.addItem(.separator()); menu.addItem(withTitle: "Adicionar conta…", action: #selector(addAccount), keyEquivalent: ""); menu.items.last?.target = self
-        menu.addItem(withTitle: "Importar perfil…", action: #selector(importProfile), keyEquivalent: ""); menu.items.last?.target = self
-        menu.addItem(withTitle: "Renomear perfil…", action: #selector(renameProfile), keyEquivalent: ""); menu.items.last?.target = self
+        menu.addItem(.separator())
         let usageItem = NSMenuItem(title: "Ver uso no Claude…", action: #selector(openUsage), keyEquivalent: "")
         usageItem.target = self
-        usageItem.toolTip = "Abre a página oficial com o uso da conta Pro/Max selecionada"
+        usageItem.toolTip = "Abre o painel visual com uso e tokens de todas as contas"
         menu.addItem(usageItem)
-        menu.addItem(withTitle: "Migrar perfis atuais…", action: #selector(migrateExisting), keyEquivalent: ""); menu.items.last?.target = self
         menu.addItem(withTitle: "Preferências…", action: #selector(preferences), keyEquivalent: ","); menu.items.last?.target = self
         menu.addItem(withTitle: "Sair", action: #selector(quit), keyEquivalent: "q"); menu.items.last?.target = self
         statusItem.menu = menu
@@ -162,7 +161,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 onRelogin: { [weak self] profile in self?.reloginFromPreferences(profile) },
                 onRename: { [weak self] profile in self?.renameSpecificProfile(profile) },
                 onRemove: { [weak self] profile in self?.removeFromPreferences(profile) },
-                onUninstall: { [weak self] in self?.uninstall() }
+                onUninstall: { [weak self] in self?.uninstall() },
+                onAdd: { [weak self] in self?.addAccount() },
+                onImport: { [weak self] in self?.importProfile() },
+                onMigrate: { [weak self] in self?.migrateExisting() }
             )
         } else {
             preferencesWindowController?.update(profiles: profiles, activeID: activeID)
@@ -212,6 +214,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             return "\(quota.key): \(Int(quota.usedPercent.rounded()))% usado (\(reset))"
         }
         return ([usage.plan ?? "Claude Pro/Max"] + lines + ["Fonte: Claude Code OAuth"]).joined(separator: "\n")
+    }
+
+    private func usageSummary(for profile: Profile) -> String {
+        guard let usage = profile.usage else { return "    Uso: indisponível — refaça o login" }
+        let quotas = usage.quotas.map { "\($0.key): \(Int($0.usedPercent.rounded()))%" }.joined(separator: "  •  ")
+        let tokens = usage.tokens.map { "Tokens: \($0.total.formatted())" } ?? "Tokens: —"
+        return "    \(quotas)  •  \(tokens)"
     }
 
     private func activateFromPreferences(_ profile: Profile) {

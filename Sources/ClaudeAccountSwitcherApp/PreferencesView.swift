@@ -9,6 +9,9 @@ struct PreferencesView: View {
     let onRename: (Profile) -> Void
     let onRemove: (Profile) -> Void
     let onUninstall: () -> Void
+    let onAdd: () -> Void
+    let onImport: () -> Void
+    let onMigrate: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -35,6 +38,12 @@ struct PreferencesView: View {
 
             Divider()
             HStack {
+                Button("Adicionar conta…") { onAdd() }.buttonStyle(.borderedProminent)
+                Button("Importar perfil…") { onImport() }.buttonStyle(.bordered)
+                Button("Migrar perfis…") { onMigrate() }.buttonStyle(.bordered)
+                Spacer()
+            }
+            HStack {
                 Text("Os perfis e credenciais serão preservados ao desinstalar.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -44,7 +53,7 @@ struct PreferencesView: View {
             }
         }
         .padding(20)
-        .frame(width: 700, height: 390)
+        .frame(width: 700, height: 450)
     }
 
     @ViewBuilder
