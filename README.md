@@ -1,34 +1,34 @@
 # Claude Account Switcher 1.2.0
 
-<img src="docs/assets/claude-account-switcher-logo.png" alt="Claude Account Switcher — logo" width="180">
+<img src="docs/assets/claude-account-switcher-logo.png" alt="Claude Account Switcher logo" width="180">
 
-App nativo de barra de menus para alternar entre perfis isolados do Claude Code no macOS. O perfil selecionado vale para novas sessões; sessões já abertas continuam intactas.
+Native macOS menu bar app for switching between isolated Claude Code profiles. The selected profile applies to new sessions; already-open sessions remain unchanged.
 
-Release atual: **1.2.0**. O DMG distribuído contém um binário universal para Apple Silicon e Intel quando o build é executado em um ambiente macOS com suporte aos dois targets.
+Current release: **1.2.0**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
 
-Download direto: [Claude-Account-Switcher-1.2.0.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.2.0.dmg)
+Direct download: [Claude-Account-Switcher-1.2.0.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.2.0.dmg)
 
-### Uso real Pro/Max
+### Real Pro/Max usage
 
-Nas Preferências e ao passar o mouse sobre cada conta no menu da barra, o app consulta diretamente a cota OAuth do Claude Code (janela de 5 horas e semanal). Cada perfil usa exclusivamente a credencial armazenada no Keychain do próprio diretório `CLAUDE_CONFIG_DIR`; nenhuma instalação de 9router ou outro gateway é necessária. A consulta usa um endpoint de consumidor da Anthropic e pode mudar sem aviso.
+In Preferences and in the account menu bar tooltip, the app queries Claude Code OAuth usage directly, including the 5-hour and weekly windows. Each profile uses only the credential stored in the Keychain for its own `CLAUDE_CONFIG_DIR`; no 9router installation or other gateway is required. This is a consumer endpoint and may change without notice.
 
-O menu **Ver uso do Claude…** abre uma janela interna com cartões por conta, barras visuais de progresso, percentuais usados e horários de renovação.
+The **View Claude usage…** menu opens an internal window with per-account cards, visual progress bars, usage percentages, and reset times.
 
-Também soma os tokens registrados nas sessões locais de cada perfil (entrada, saída e cache), deixando claro que essa métrica é consumo registrado pelo Claude Code, não um limite de tokens da assinatura.
+The app also sums tokens recorded in each profile's local sessions (input, output, and cache). This represents Claude Code activity recorded locally, not a subscription token limit.
 
-### Seletor de contas
+### Account selector
 
-Ao clicar no ícone da barra, o seletor mostra o uso de cada conta diretamente no menu:
+Clicking the menu bar icon shows each account's usage directly in the selector:
 
-![Exemplo do seletor de contas com cotas e tokens](docs/assets/menu-usage-example.png)
+![Account selector example with quotas and tokens](docs/assets/menu-usage-example.png)
 
-## Estado atual
+## Current status
 
-O projeto já contém o núcleo de perfis, persistência atômica, descoberta do Claude Code, autenticação via `claude auth`, launcher, ativação com rollback, migração, login item e menu de barra. O ambiente usado para este build tem Swift Command Line Tools, mas não tem Xcode/XCTest; por isso o pacote inclui um runner de testes executável.
+The project includes profile management, atomic persistence, Claude Code discovery, authentication through `claude auth`, a launcher, rollback-safe activation, migration, login-item support, and the menu bar interface. The build environment uses Swift Command Line Tools; the package therefore includes an executable test runner.
 
-Em **Preferências…**, é possível ver o e-mail e o status de cada conta, ativar, renomear, remover ou refazer o login de um perfil. Ao abrir a tela, o app atualiza os dados de autenticação pelo `claude auth status` oficial.
+In **Preferences…**, you can view each account's email and status, activate, rename, remove, or re-authenticate a profile. When opened, the app refreshes authentication data using the official `claude auth status` command.
 
-## Build e testes
+## Build and test
 
 ```zsh
 cd /path/to/ClaudeAccountSwitcher
@@ -38,33 +38,33 @@ swift build -c release --product ClaudeAccountSwitcher
 ./Scripts/build-dmg.sh
 ```
 
-O runner deve imprimir `N tests passed`. O build gera `build/Claude Account Switcher.app`, assinado localmente com assinatura ad hoc.
-`./Scripts/build-dmg.sh` também gera `build/Claude-Account-Switcher.dmg` para arrastar o app para `Applications`.
+The runner prints `N tests passed`. The build creates `build/Claude Account Switcher.app`, locally ad-hoc signed.
+`./Scripts/build-dmg.sh` also creates `build/Claude-Account-Switcher.dmg`, ready to drag into `Applications`.
 
-## Instalação
+## Installation
 
 ```zsh
 ./Scripts/install-dev.sh
 ```
 
-O script somente constrói, copia e abre o app. Ele não migra contas, não altera `.zprofile` e não remove aliases.
+The script builds, copies, and opens the app. It does not migrate accounts, modify `.zprofile`, or remove aliases.
 
-## Primeiro uso
+## First use
 
-Abra o app, importe `~/.claude` e `~/.claude-work` pela interface e confirme o backup antes de limpar aliases. Para adicionar conta, escolha Claude Pro/Max ou Anthropic Console; o login oficial abre no navegador e o perfil é salvo isoladamente.
+Open the app, import `~/.claude` and `~/.claude-work` through the interface, and confirm the backup before removing aliases. To add an account, choose Claude Pro/Max or Anthropic Console; the official browser login opens and the profile is stored separately.
 
-Perfis ficam em `~/Library/Application Support/Claude Account Switcher/Profiles/`. Metadados e estado ativo ficam no mesmo diretório. Tokens não são lidos pelo app; o Claude Code e o Keychain continuam responsáveis por eles.
+Profiles are stored in `~/Library/Application Support/Claude Account Switcher/Profiles/`. Metadata and active state are stored alongside them. Tokens are not read from profile files by the app; Claude Code and the macOS Keychain remain responsible for credential storage.
 
-## Integração
+## Integration
 
-Ao reparar a integração, o app instala um launcher em `~/Library/Application Support/Claude Account Switcher/bin/claude` e adiciona um bloco delimitado a `~/.zprofile`. O launcher preserva todos os argumentos do comando `claude` e injeta `CLAUDE_CONFIG_DIR` do perfil ativo. O app também atualiza o ambiente launchd para aplicativos gráficos novos.
+When repairing integration, the app installs a launcher at `~/Library/Application Support/Claude Account Switcher/bin/claude` and adds a delimited block to `~/.zprofile`. The launcher preserves all `claude` arguments and injects the active profile's `CLAUDE_CONFIG_DIR`. The app also updates the launchd environment for new graphical applications.
 
-O atalho padrão é `⌥⌘C`. Aplicativos que já estavam abertos podem precisar ser reiniciados para receber o novo ambiente.
+The default shortcut is `⌥⌘C`. Applications that were already open may need to be restarted to receive the new environment.
 
-## Recuperação
+## Recovery
 
-Antes de qualquer migração o app cria backups com manifesto. Se a troca falhar, o estado ativo anterior é restaurado. A remoção de perfil é recuperável pela área `Recently Removed`. Para remover a integração, use a ação de reparo/remoção no app; o bloco delimitado é o único trecho editado.
+Before any migration, the app creates backups with a manifest. If switching fails, the previous active state is restored. Profile removal can be recovered from `Recently Removed`. To remove integration, use the repair/remove action in the app; only the delimited block is edited.
 
-## Desenvolvimento
+## Development
 
-O núcleo está em `Sources/ClaudeAccountSwitcherCore`, a UI em `Sources/ClaudeAccountSwitcherApp` e o runner em `Tests/ClaudeAccountSwitcherTests`. Para uso de XCTest e assinatura de desenvolvimento, instale Xcode e mantenha os mesmos módulos e interfaces.
+The core is in `Sources/ClaudeAccountSwitcherCore`, the UI is in `Sources/ClaudeAccountSwitcherApp`, and the runner is in `Tests/ClaudeAccountSwitcherTests`. For XCTest and development signing, install Xcode while keeping the same modules and interfaces.
