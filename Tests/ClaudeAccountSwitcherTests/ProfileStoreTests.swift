@@ -19,6 +19,7 @@ enum ProfileStoreTests {
             ,("shell integration is idempotent", testShellIntegration)
             ,("activation rolls back on launchd failure", testActivationRollback)
             ,("migration preserves hidden Claude files", testMigration)
+            ,("legacy active state is migrated", testLegacyActiveState)
             ,("launcher selects active profile", testLauncher)
         ]
         var failures = 0
@@ -86,12 +87,16 @@ enum ProfileStoreTests {
         let home = try temporaryRoot(); let app = home.appendingPathComponent("support")
         let manager = ShellIntegrationManager(appSupport: app)
         let zprofile = home.appendingPathComponent(".zprofile")
+        let zshrc = home.appendingPathComponent(".zshrc")
         try "alias keep='echo keep'\n".write(to: zprofile, atomically: true, encoding: .utf8)
+        try "alias keep_rc='echo keep_rc'\n".write(to: zshrc, atomically: true, encoding: .utf8)
         try manager.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"))
         let first = try String(contentsOf: zprofile)
+        let firstRC = try String(contentsOf: zshrc)
         try manager.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"))
         let second = try String(contentsOf: zprofile)
-        try check(first == second && second.contains("alias keep") && second.components(separatedBy: ShellIntegrationManager.startMarker).count == 2, "shell install was not idempotent")
+        let secondRC = try String(contentsOf: zshrc)
+        try check(first == second && firstRC == secondRC && second.contains("alias keep") && secondRC.contains("alias keep_rc") && second.components(separatedBy: ShellIntegrationManager.startMarker).count == 2 && secondRC.components(separatedBy: ShellIntegrationManager.startMarker).count == 2, "shell install was not idempotent")
     }
 
     final class FakeLaunchd: LaunchdEnvironmentClient, @unchecked Sendable {
@@ -124,17 +129,32 @@ enum ProfileStoreTests {
 
     static func testLauncher() throws {
         let root = try temporaryRoot(); let app = root.appendingPathComponent("app-support")
-        let store = try ProfileStore(root: app); let profileDir = root.appendingPathComponent("profile")
-        try FileManager.default.createDirectory(at: profileDir, withIntermediateDirectories: true)
-        let profile = Profile(name: "Active", directory: profileDir); try store.save(profile); try store.setActive(ActiveProfile(id: profile.id, directory: profile.directory))
+        let store = try ProfileStore(root: app); let firstDir = root.appendingPathComponent("first profile"); let secondDir = root.appendingPathComponent("second profile")
+        try FileManager.default.createDirectory(at: firstDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondDir, withIntermediateDirectories: true)
+        let first = Profile(name: "First", directory: firstDir); let second = Profile(name: "Second", directory: secondDir)
+        try store.save(first); try store.save(second); try store.setActive(ActiveProfile(id: second.id, directory: second.directory))
         let shell = ShellIntegrationManager(appSupport: app); let home = root.appendingPathComponent("home"); try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        try shell.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"))
+        try shell.install(home: home, officialBinary: URL(fileURLWithPath: "/usr/bin/env"))
         do {
-            let result = try ProcessRunner().run(executable: shell.launcherURL(), arguments: ["hello"])
-            try check(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "hello", "launcher did not execute official binary")
+            let result = try ProcessRunner().run(executable: shell.launcherURL())
+            try check(result.stdout.contains("CLAUDE_CONFIG_DIR=\(secondDir.path)"), "launcher did not select the active profile")
         } catch {
             let script = String(data: try Data(contentsOf: shell.launcherURL()), encoding: .utf8) ?? "script unavailable"
             throw TestFailure.failed("launcher failed: \(error); script=\(script)")
         }
+    }
+
+    static func testLegacyActiveState() throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root.appendingPathComponent("app-support"))
+        let profileDir = root.appendingPathComponent("profile with spaces")
+        try FileManager.default.createDirectory(at: profileDir, withIntermediateDirectories: true)
+        let profile = Profile(name: "Legacy", directory: profileDir); try store.save(profile)
+        let legacy = "{\"id\":\"\(profile.id.uuidString)\",\"updatedAt\":\"2026-07-20T00:00:00Z\"}"
+        try legacy.data(using: .utf8)!.write(to: store.activeURL)
+        let active = try store.active()
+        try check(active?.directory.path == profileDir.path, "legacy active profile was not resolved")
+        let migrated = String(data: try Data(contentsOf: store.activeURL), encoding: .utf8) ?? ""
+        try check(migrated.contains("profile with spaces") && !migrated.contains("%20"), "active path was not migrated to a plain path")
     }
 }

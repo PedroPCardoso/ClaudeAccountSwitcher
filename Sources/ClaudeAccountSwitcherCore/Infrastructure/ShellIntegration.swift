@@ -13,25 +13,28 @@ public struct ShellIntegrationManager: Sendable {
         let launcher = renderLauncher(stateURL: appSupport.appendingPathComponent("active-profile.json"), officialBinary: officialBinary)
         try launcher.data(using: .utf8)!.write(to: launcherURL(), options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcherURL().path)
-        let zprofile = home.appendingPathComponent(".zprofile")
-        let original = (try? String(contentsOf: zprofile, encoding: .utf8)) ?? ""
-        if FileManager.default.fileExists(atPath: zprofile.path) {
-            let backups = appSupport.appendingPathComponent("Backups", isDirectory: true)
-            try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            try? FileManager.default.copyItem(at: zprofile, to: backups.appendingPathComponent("shell-\(Int(Date().timeIntervalSince1970)).zprofile"))
-        }
-        if !original.contains(Self.startMarker) { try original.data(using: .utf8)!.write(to: zprofile, options: .atomic) }
-        let current = (try? String(contentsOf: zprofile, encoding: .utf8)) ?? ""
         let block = "\(Self.startMarker)\nexport PATH=\"\(bin.path):$PATH\"\n\(Self.endMarker)\n"
-        let stripped = removeBlock(from: current)
-        try (stripped + (stripped.hasSuffix("\n") || stripped.isEmpty ? "" : "\n") + block).data(using: .utf8)!.write(to: zprofile, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: zprofile.path)
+        for filename in [".zprofile", ".zshrc"] {
+            let shellFile = home.appendingPathComponent(filename)
+            let original = (try? String(contentsOf: shellFile, encoding: .utf8)) ?? ""
+            if FileManager.default.fileExists(atPath: shellFile.path) {
+                let backups = appSupport.appendingPathComponent("Backups", isDirectory: true)
+                try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                try? FileManager.default.copyItem(at: shellFile, to: backups.appendingPathComponent("shell-\(Int(Date().timeIntervalSince1970))-\(filename.dropFirst())"))
+            }
+            let stripped = removeBlock(from: original)
+            let content = stripped + (stripped.hasSuffix("\n") || stripped.isEmpty ? "" : "\n") + block
+            try content.data(using: .utf8)!.write(to: shellFile, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: shellFile.path)
+        }
     }
 
     public func remove(home: URL) throws {
-        let file = home.appendingPathComponent(".zprofile")
-        guard let content = try? String(contentsOf: file, encoding: .utf8) else { return }
-        try removeBlock(from: content).data(using: .utf8)!.write(to: file, options: .atomic)
+        for filename in [".zprofile", ".zshrc"] {
+            let file = home.appendingPathComponent(filename)
+            guard let content = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            try removeBlock(from: content).data(using: .utf8)!.write(to: file, options: .atomic)
+        }
     }
 
     public func renderLauncher(stateURL: URL, officialBinary: URL) -> String {

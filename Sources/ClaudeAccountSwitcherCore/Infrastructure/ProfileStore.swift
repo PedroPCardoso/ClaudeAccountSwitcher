@@ -41,8 +41,20 @@ public final class ProfileStore: @unchecked Sendable {
 
     public func active() throws -> ActiveProfile? {
         guard fileManager.fileExists(atPath: activeURL.path) else { return nil }
-        do { return try decoder.decode(ActiveProfile.self, from: Data(contentsOf: activeURL)) }
-        catch { throw StoreError.corruptState(activeURL) }
+        let data = try Data(contentsOf: activeURL)
+        if let active = try? decoder.decode(ActiveProfile.self, from: data) { return active }
+
+        // Older releases persisted only the active id. Resolve its directory from
+        // the profile metadata so upgrading does not strand the terminal launcher.
+        guard
+            let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let rawID = raw["id"] as? String,
+            let id = UUID(uuidString: rawID),
+            let profile = try? list().first(where: { $0.id == id })
+        else { throw StoreError.corruptState(activeURL) }
+        let migrated = ActiveProfile(id: profile.id, directory: profile.directory)
+        try setActive(migrated)
+        return migrated
     }
 
     public func setActive(_ active: ActiveProfile) throws { try atomicWrite(try encoder.encode(active), to: activeURL) }
