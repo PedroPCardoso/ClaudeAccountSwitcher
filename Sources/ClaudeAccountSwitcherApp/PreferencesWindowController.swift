@@ -17,7 +17,7 @@ final class PreferencesWindowController: NSWindowController {
         self.onRemove = onRemove
         let view = PreferencesView(profiles: profiles, activeID: activeID, onActivate: onActivate, onRelogin: onRelogin, onRename: onRename, onRemove: onRemove)
         hostingView = NSHostingView(rootView: view)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 390), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 390), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Preferências — Claude Account Switcher"
         window.contentView = hostingView
         window.center()

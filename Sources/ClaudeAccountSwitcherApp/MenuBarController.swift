@@ -161,12 +161,30 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
         preferencesWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+        refreshProfileMetadata()
     }
 
     private func refreshPreferences() {
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
         preferencesWindowController?.update(profiles: profiles, activeID: activeID)
+    }
+
+    private func refreshProfileMetadata() {
+        let profiles = (try? store.list()) ?? []
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            for profile in profiles {
+                guard let status = try? self.auth.status(profileDirectory: profile.directory) else { continue }
+                var updated = profile
+                updated.email = status.email ?? profile.email
+                updated.organization = status.organization ?? profile.organization
+                updated.kind = status.kind
+                updated.health = status.isAuthenticated ? .ready : .expired
+                try? self.store.save(updated)
+            }
+            DispatchQueue.main.async { self.rebuildMenu(); self.refreshPreferences() }
+        }
     }
 
     private func activateFromPreferences(_ profile: Profile) {

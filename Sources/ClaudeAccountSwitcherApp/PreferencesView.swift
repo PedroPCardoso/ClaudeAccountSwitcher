@@ -33,7 +33,7 @@ struct PreferencesView: View {
             }
         }
         .padding(20)
-        .frame(width: 560, height: 390)
+        .frame(width: 700, height: 390)
     }
 
     @ViewBuilder
@@ -71,11 +71,8 @@ struct PreferencesView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
             }
-            Button { onRelogin(profile) } label: {
-                Image(systemName: "person.crop.circle.badge.arrow.trianglehead.2.clockwise.rotate.90")
-            }
-            .buttonStyle(.borderless)
-            .help("Refazer login")
+            Button("Refazer login") { onRelogin(profile) }
+                .buttonStyle(.borderless)
             Button { onRename(profile) } label: {
                 Image(systemName: "pencil")
             }
