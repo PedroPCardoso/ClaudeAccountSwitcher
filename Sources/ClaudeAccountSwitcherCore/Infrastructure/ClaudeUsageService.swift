@@ -16,9 +16,23 @@ public struct ClaudeUsageSnapshot: Codable, Equatable, Sendable {
     public let plan: String?
     public let quotas: [ClaudeQuota]
     public let source: String
+    public let tokens: ClaudeTokenUsage?
 
-    public init(fetchedAt: Date = .now, plan: String? = nil, quotas: [ClaudeQuota], source: String) {
-        self.fetchedAt = fetchedAt; self.plan = plan; self.quotas = quotas; self.source = source
+    public init(fetchedAt: Date = .now, plan: String? = nil, quotas: [ClaudeQuota], source: String, tokens: ClaudeTokenUsage? = nil) {
+        self.fetchedAt = fetchedAt; self.plan = plan; self.quotas = quotas; self.source = source; self.tokens = tokens
+    }
+}
+
+public struct ClaudeTokenUsage: Codable, Equatable, Sendable {
+    public let input: Int
+    public let output: Int
+    public let cacheRead: Int
+    public let cacheCreation: Int
+    public let messageCount: Int
+
+    public var total: Int { input + output + cacheRead + cacheCreation }
+    public init(input: Int, output: Int, cacheRead: Int, cacheCreation: Int, messageCount: Int) {
+        self.input = input; self.output = output; self.cacheRead = cacheRead; self.cacheCreation = cacheCreation; self.messageCount = messageCount
     }
 }
 
@@ -61,6 +75,26 @@ public struct ClaudeUsageService: Sendable {
         }
         guard !quotas.isEmpty else { throw ClaudeUsageError.invalidResponse }
         return ClaudeUsageSnapshot(plan: root["plan"] as? String ?? "Claude Pro/Max", quotas: quotas, source: "Anthropic OAuth (Claude Code)")
+    }
+
+    public func tokenUsage(profileDirectory: URL) -> ClaudeTokenUsage {
+        let projects = profileDirectory.appendingPathComponent("projects", isDirectory: true)
+        guard let enumerator = FileManager.default.enumerator(at: projects, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else {
+            return ClaudeTokenUsage(input: 0, output: 0, cacheRead: 0, cacheCreation: 0, messageCount: 0)
+        }
+        var input = 0, output = 0, cacheRead = 0, cacheCreation = 0, messages = 0
+        for case let url as URL in enumerator where url.pathExtension == "jsonl" {
+            guard let handle = try? FileHandle(forReadingFrom: url), let data = try? handle.readToEnd(), let text = String(data: data, encoding: .utf8) else { continue }
+            for line in text.split(separator: "\n") {
+                guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any], object["type"] as? String == "assistant", let message = object["message"] as? [String: Any], let usage = message["usage"] as? [String: Any] else { continue }
+                input += (usage["input_tokens"] as? NSNumber)?.intValue ?? 0
+                output += (usage["output_tokens"] as? NSNumber)?.intValue ?? 0
+                cacheRead += (usage["cache_read_input_tokens"] as? NSNumber)?.intValue ?? 0
+                cacheCreation += (usage["cache_creation_input_tokens"] as? NSNumber)?.intValue ?? 0
+                messages += 1
+            }
+        }
+        return ClaudeTokenUsage(input: input, output: output, cacheRead: cacheRead, cacheCreation: cacheCreation, messageCount: messages)
     }
 
     private func accessToken(profileDirectory: URL) -> String? {

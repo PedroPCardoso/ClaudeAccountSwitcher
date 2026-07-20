@@ -12,6 +12,8 @@ Nas Preferências e ao passar o mouse sobre cada conta no menu da barra, o app c
 
 O menu **Ver uso do Claude…** abre uma janela interna com cartões por conta, barras visuais de progresso, percentuais usados e horários de renovação.
 
+Também soma os tokens registrados nas sessões locais de cada perfil (entrada, saída e cache), deixando claro que essa métrica é consumo registrado pelo Claude Code, não um limite de tokens da assinatura.
+
 ## Estado atual
 
 O projeto já contém o núcleo de perfis, persistência atômica, descoberta do Claude Code, autenticação via `claude auth`, launcher, ativação com rollback, migração, login item e menu de barra. O ambiente usado para este build tem Swift Command Line Tools, mas não tem Xcode/XCTest; por isso o pacote inclui um runner de testes executável.

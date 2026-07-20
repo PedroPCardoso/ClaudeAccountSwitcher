@@ -192,6 +192,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 updated.health = status.isAuthenticated ? .ready : .expired
                 try? self.store.save(updated)
                 if let snapshot = try? await self.usage.fetch(profileDirectory: profile.directory) {
+                    var snapshot = snapshot
+                    snapshot = ClaudeUsageSnapshot(fetchedAt: snapshot.fetchedAt, plan: snapshot.plan, quotas: snapshot.quotas, source: snapshot.source, tokens: self.usage.tokenUsage(profileDirectory: profile.directory))
                     updated.usage = snapshot
                     try? self.store.save(updated)
                 }

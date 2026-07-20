@@ -52,6 +52,15 @@ struct UsageView: View {
 
             if let usage = profile.usage, !usage.quotas.isEmpty {
                 ForEach(usage.quotas, id: \.key) { quota in quotaRow(quota) }
+                if let tokens = usage.tokens {
+                    HStack(spacing: 12) {
+                        Label("\(tokens.total.formatted()) tokens (inclui cache)", systemImage: "number")
+                        Text("Entrada \(tokens.input.formatted())")
+                        Text("Saída \(tokens.output.formatted())")
+                        Text("\(tokens.messageCount) respostas")
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                }
             } else {
                 Label("Uso indisponível — refaça o login desta conta.", systemImage: "exclamationmark.triangle")
                     .font(.subheadline).foregroundStyle(.orange)
