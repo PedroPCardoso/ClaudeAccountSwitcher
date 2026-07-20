@@ -50,6 +50,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         menu.addItem(.separator()); menu.addItem(withTitle: "Adicionar conta…", action: #selector(addAccount), keyEquivalent: ""); menu.items.last?.target = self
         menu.addItem(withTitle: "Importar perfil…", action: #selector(importProfile), keyEquivalent: ""); menu.items.last?.target = self
         menu.addItem(withTitle: "Renomear perfil…", action: #selector(renameProfile), keyEquivalent: ""); menu.items.last?.target = self
+        let usageItem = NSMenuItem(title: "Ver uso no Claude…", action: #selector(openUsage), keyEquivalent: "")
+        usageItem.target = self
+        usageItem.toolTip = "Abre a página oficial com o uso da conta Pro/Max selecionada"
+        menu.addItem(usageItem)
         menu.addItem(withTitle: "Migrar perfis atuais…", action: #selector(migrateExisting), keyEquivalent: ""); menu.items.last?.target = self
         menu.addItem(withTitle: "Preferências…", action: #selector(preferences), keyEquivalent: ","); menu.items.last?.target = self
         menu.addItem(withTitle: "Sair", action: #selector(quit), keyEquivalent: "q"); menu.items.last?.target = self
@@ -104,6 +108,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         guard profiles.indices.contains(index), !name.isEmpty else { showError(NSError(domain: "Claude Account Switcher", code: 2, userInfo: [NSLocalizedDescriptionKey: "Informe um nome para o perfil."])); return }
         var updated = profiles[index]; updated.name = name
         do { try store.save(updated); rebuildMenu(); notify("Perfil renomeado") } catch { showError(error) }
+    }
+
+    @objc private func openUsage() {
+        guard let url = URL(string: "https://claude.ai/settings/usage"), NSWorkspace.shared.open(url) else {
+            showError(NSError(domain: "Claude Account Switcher", code: 3, userInfo: [NSLocalizedDescriptionKey: "Não foi possível abrir a página oficial de uso do Claude."]))
+            return
+        }
     }
 
     @objc private func migrateExisting() {
