@@ -4,6 +4,8 @@ App nativo de barra de menus para alternar entre perfis isolados do Claude Code 
 
 Release atual: **1.0.0**. O DMG distribuído contém um binário universal para Apple Silicon e Intel quando o build é executado em um ambiente macOS com suporte aos dois targets.
 
+Download direto: [Claude-Account-Switcher-1.0.0.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.0.0.dmg)
+
 ## Estado atual
 
 O projeto já contém o núcleo de perfis, persistência atômica, descoberta do Claude Code, autenticação via `claude auth`, launcher, ativação com rollback, migração, login item e menu de barra. O ambiente usado para este build tem Swift Command Line Tools, mas não tem Xcode/XCTest; por isso o pacote inclui um runner de testes executável.
