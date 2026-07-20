@@ -77,7 +77,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     @objc private func selectProfile(_ sender: NSMenuItem) {
         guard let profile = sender.representedObject as? Profile else { return }
-        Task { do { _ = try await activation.activate(profile); rebuildMenu(); notify(AppStrings.t("Perfil ativo: \(profile.name)", "Active profile: \(profile.name)")) } catch { showError(error) } }
+        Task { do { let result = try await activation.activate(profile); rebuildMenu(); notify(activationResult: result) } catch { showError(error) } }
     }
 
     @objc private func addAccount() {
@@ -236,7 +236,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     private func activateFromPreferences(_ profile: Profile) {
         Task {
-            do { _ = try await activation.activate(profile); rebuildMenu(); refreshPreferences(); notify("Perfil ativo: \(profile.name)") }
+            do { let result = try await activation.activate(profile); rebuildMenu(); refreshPreferences(); notify(activationResult: result) }
             catch { showError(error) }
         }
     }
@@ -308,6 +308,16 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     }
     @objc private func quit() { NSApp.terminate(nil) }
     private func notify(_ message: String) { let n = NSUserNotification(); n.title = "Claude Account Switcher"; n.informativeText = message; NSUserNotificationCenter.default.deliver(n) }
+    private func notify(activationResult result: ActivationResult) {
+        switch result.desktopSync {
+        case .synced:
+            notify(AppStrings.t("Perfil ativo: \(result.profile.name) (app nativo reaberto)", "Active profile: \(result.profile.name) (native app reopened)"))
+        case .skipped:
+            notify(AppStrings.t("Perfil ativo: \(result.profile.name)", "Active profile: \(result.profile.name)"))
+        case .failed:
+            notify(AppStrings.t("Perfil ativo: \(result.profile.name) — não consegui reabrir o app nativo, abra manualmente", "Active profile: \(result.profile.name) — could not reopen the native app, open it manually"))
+        }
+    }
     private func showError(_ error: Error) { let alert = NSAlert(error: NSError(domain: "Claude Account Switcher", code: 1, userInfo: [NSLocalizedDescriptionKey: error.localizedDescription])); alert.runModal() }
 
     private func installShortcutMonitor() {
