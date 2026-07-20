@@ -1,6 +1,6 @@
 import Foundation
 
-public enum StoreError: Error, Equatable { case corruptState(URL), duplicateProfile(UUID), missingProfile(UUID) }
+public enum StoreError: Error, Equatable { case corruptState(URL), duplicateProfile(UUID), missingProfile(UUID), unmanagedProfile(URL) }
 
 public final class ProfileStore: @unchecked Sendable {
     public let root: URL
@@ -35,8 +35,15 @@ public final class ProfileStore: @unchecked Sendable {
     }
 
     public func remove(_ profile: Profile) throws {
-        let profiles = try list().filter { $0.id != profile.id }
+        let managedRoot = profilesDirectory.standardizedFileURL.path
+        let profilePath = profile.directory.standardizedFileURL.path
+        guard profilePath.hasPrefix(managedRoot + "/") else { throw StoreError.unmanagedProfile(profile.directory) }
+        let existing = try list()
+        guard existing.contains(where: { $0.id == profile.id }) else { throw StoreError.missingProfile(profile.id) }
+        let profiles = existing.filter { $0.id != profile.id }
         try atomicWrite(try encoder.encode(profiles), to: metadataURL)
+        if fileManager.fileExists(atPath: profile.directory.path) { try fileManager.removeItem(at: profile.directory) }
+        if (try? active()?.id) == profile.id, fileManager.fileExists(atPath: activeURL.path) { try fileManager.removeItem(at: activeURL) }
     }
 
     public func active() throws -> ActiveProfile? {

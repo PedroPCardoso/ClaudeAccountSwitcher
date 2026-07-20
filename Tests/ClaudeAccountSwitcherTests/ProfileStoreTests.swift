@@ -14,6 +14,7 @@ enum ProfileStoreTests {
             ("profile JSON round trip", testProfileRoundTrip),
             ("store persists profiles and active profile", testStorePersists),
             ("store renames a profile without changing its identity", testRenameProfile),
+            ("store removes profile data", testRemoveProfile),
             ("managed directory permissions", testManagedDirectory)
             ,("process runner preserves environment", testProcessRunner)
             ,("shell integration is idempotent", testShellIntegration)
@@ -72,6 +73,15 @@ enum ProfileStoreTests {
         try store.save(renamed)
         let stored = try store.list()
         try check(stored.count == 1 && stored[0].id == profile.id && stored[0].name == "Conta pessoal" && stored[0].email == profile.email, "profile rename did not preserve identity")
+    }
+
+    static func testRemoveProfile() throws {
+        let store = try ProfileStore(root: try temporaryRoot())
+        let profile = Profile(id: UUID(), name: "Remover", directory: try store.createManagedDirectory(id: UUID()))
+        try store.save(profile)
+        try store.remove(profile)
+        try check(try store.list().isEmpty, "removed profile remains in metadata")
+        try check(!FileManager.default.fileExists(atPath: profile.directory.path), "removed profile directory still exists")
     }
 
     static func testProcessRunner() throws {

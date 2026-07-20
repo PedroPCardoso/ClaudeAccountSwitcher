@@ -12,6 +12,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private let shell: ShellIntegrationManager
     private let locator: ClaudeLocator
     private let loginItem = LoginItemService()
+    private var preferencesWindowController: PreferencesWindowController?
 
     override init() {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude Account Switcher", isDirectory: true)
@@ -104,10 +105,24 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let accessory = NSStackView(views: [picker, field]); accessory.orientation = .vertical; accessory.spacing = 8; accessory.frame = NSRect(x: 0, y: 0, width: 260, height: 62)
         let alert = NSAlert(); alert.messageText = "Renomear perfil"; alert.informativeText = "O nome é apenas um rótulo local; identidade, diretório e credenciais permanecem inalterados."; alert.accessoryView = accessory; alert.addButton(withTitle: "Salvar"); alert.addButton(withTitle: "Cancelar")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let index = picker.indexOfSelectedItem; let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard profiles.indices.contains(index), !name.isEmpty else { showError(NSError(domain: "Claude Account Switcher", code: 2, userInfo: [NSLocalizedDescriptionKey: "Informe um nome para o perfil."])); return }
-        var updated = profiles[index]; updated.name = name
-        do { try store.save(updated); rebuildMenu(); notify("Perfil renomeado") } catch { showError(error) }
+        let index = picker.indexOfSelectedItem
+        guard profiles.indices.contains(index) else { return }
+        renameSpecificProfile(profiles[index], proposedName: field.stringValue)
+    }
+
+    private func renameSpecificProfile(_ profile: Profile, proposedName: String? = nil) {
+        let name: String
+        if let proposedName {
+            name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            let field = NSTextField(string: profile.name); field.placeholderString = "Novo nome"
+            let alert = NSAlert(); alert.messageText = "Renomear perfil"; alert.informativeText = "O nome é apenas um rótulo local; identidade, diretório e credenciais permanecem inalterados."; alert.accessoryView = field; alert.addButton(withTitle: "Salvar"); alert.addButton(withTitle: "Cancelar")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !name.isEmpty else { showError(NSError(domain: "Claude Account Switcher", code: 2, userInfo: [NSLocalizedDescriptionKey: "Informe um nome para o perfil."])); return }
+        var updated = profile; updated.name = name
+        do { try store.save(updated); rebuildMenu(); refreshPreferences(); notify("Perfil renomeado") } catch { showError(error) }
     }
 
     @objc private func openUsage() {
@@ -129,7 +144,58 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         } catch { showError(error) }
     }
 
-    @objc private func preferences() { let alert = NSAlert(); alert.messageText = "Claude Account Switcher"; alert.informativeText = "Atalho global: ⌥⌘C\nPerfis são isolados e aplicados a novas sessões.\nUse o menu para adicionar, importar ou trocar contas."; alert.addButton(withTitle: "OK"); alert.runModal() }
+    @objc private func preferences() {
+        let profiles = (try? store.list()) ?? []
+        let activeID = try? store.active()?.id
+        if preferencesWindowController == nil {
+            preferencesWindowController = PreferencesWindowController(
+                profiles: profiles,
+                activeID: activeID,
+                onActivate: { [weak self] profile in self?.activateFromPreferences(profile) },
+                onRename: { [weak self] profile in self?.renameSpecificProfile(profile) },
+                onRemove: { [weak self] profile in self?.removeFromPreferences(profile) }
+            )
+        } else {
+            preferencesWindowController?.update(profiles: profiles, activeID: activeID)
+        }
+        preferencesWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func refreshPreferences() {
+        let profiles = (try? store.list()) ?? []
+        let activeID = try? store.active()?.id
+        preferencesWindowController?.update(profiles: profiles, activeID: activeID)
+    }
+
+    private func activateFromPreferences(_ profile: Profile) {
+        Task {
+            do { _ = try await activation.activate(profile); rebuildMenu(); refreshPreferences(); notify("Perfil ativo: \(profile.name)") }
+            catch { showError(error) }
+        }
+    }
+
+    private func removeFromPreferences(_ profile: Profile) {
+        let profiles = (try? store.list()) ?? []
+        let activeID = try? store.active()?.id
+        if profile.id == activeID && profiles.count == 1 {
+            showError(NSError(domain: "Claude Account Switcher", code: 4, userInfo: [NSLocalizedDescriptionKey: "Adicione outra conta antes de remover a única conta ativa."]))
+            return
+        }
+
+        let alert = NSAlert(); alert.messageText = "Remover perfil?"; alert.informativeText = "A conta \(profile.name) e suas credenciais isoladas serão apagadas deste Mac. Esta ação não remove a conta na Anthropic."; alert.addButton(withTitle: "Remover"); alert.addButton(withTitle: "Cancelar"); alert.alertStyle = .warning
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        Task {
+            do {
+                if profile.id == activeID, let replacement = profiles.first(where: { $0.id != profile.id }) {
+                    _ = try await activation.activate(replacement)
+                }
+                try store.remove(profile)
+                rebuildMenu(); refreshPreferences(); notify("Perfil removido")
+            } catch { showError(error) }
+        }
+    }
     @objc private func quit() { NSApp.terminate(nil) }
     private func notify(_ message: String) { let n = NSUserNotification(); n.title = "Claude Account Switcher"; n.informativeText = message; NSUserNotificationCenter.default.deliver(n) }
     private func showError(_ error: Error) { let alert = NSAlert(error: NSError(domain: "Claude Account Switcher", code: 1, userInfo: [NSLocalizedDescriptionKey: error.localizedDescription])); alert.runModal() }
