@@ -13,6 +13,10 @@ struct PreferencesView: View {
     let onImport: () -> Void
     let onMigrate: () -> Void
 
+    @AppStorage(FiveHourAlertThreshold.defaultsKey) private var fiveHourThreshold: Double = FiveHourAlertThreshold.default
+    @AppStorage(FiveHourAlertSound.defaultsKey) private var fiveHourSoundRaw: String = FiveHourAlertSound.default.rawValue
+    @AppStorage(AppPreferences.relaunchDesktopOnSwitch) private var relaunchDesktopOnSwitch: Bool = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(AppStrings.t("Contas Claude", "Claude Accounts")).font(.title2.weight(.semibold))
@@ -35,6 +39,22 @@ struct PreferencesView: View {
                 }
                 .listStyle(.inset)
             }
+
+            Divider()
+            HStack(spacing: 16) {
+                Stepper(value: $fiveHourThreshold, in: 1...100, step: 5) {
+                    Text(AppStrings.t("Alertar em \(Int(fiveHourThreshold))% da janela de 5h", "Alert at \(Int(fiveHourThreshold))% of the 5-hour window"))
+                }
+                Picker(AppStrings.t("Som:", "Sound:"), selection: $fiveHourSoundRaw) {
+                    ForEach(FiveHourAlertSound.allCases, id: \.self) { Text(soundLabel($0)).tag($0.rawValue) }
+                }
+                .fixedSize()
+                Spacer()
+            }
+            Toggle(isOn: $relaunchDesktopOnSwitch) {
+                Text(AppStrings.t("Reabrir o app nativo do Claude ao trocar de conta", "Reopen the native Claude app when switching accounts"))
+            }
+            .help(AppStrings.t("Desativado por padrão. O terminal troca de conta sem reabrir o app nativo.", "Off by default. The terminal switches accounts without reopening the native app."))
 
             Divider()
             HStack {
@@ -138,6 +158,18 @@ struct PreferencesView: View {
         case .ready: return .green
         case .expired, .unavailable: return .orange
         case .unknown: return .secondary
+        }
+    }
+
+    private func soundLabel(_ sound: FiveHourAlertSound) -> String {
+        switch sound {
+        case .none: return AppStrings.t("Nenhum", "None")
+        case .standard: return AppStrings.t("Padrão", "Default")
+        case .basso: return "Basso"
+        case .glass: return "Glass"
+        case .hero: return "Hero"
+        case .ping: return "Ping"
+        case .sosumi: return "Sosumi"
         }
     }
 

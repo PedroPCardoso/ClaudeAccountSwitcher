@@ -36,6 +36,11 @@ enum ProfileStoreTests {
             ,("copies the default desktop session into a profile that has none yet", testCopyDefaultDesktopSessionIntoFreshProfile)
             ,("does not overwrite a profile that already has a real desktop session", testCopyDefaultDesktopSessionSkipsExistingSession)
             ,("does not copy when the default desktop directory has no real session", testCopyDefaultDesktopSessionSkipsWhenSourceEmpty)
+            ,("5h alert fires once per threshold crossing and rearms below it", testFiveHourAlertTracker)
+            ,("5h alert threshold falls back to default when invalid", testFiveHourAlertThreshold)
+            ,("5h alert sound falls back to default when unknown", testFiveHourAlertSound)
+            ,("usage reset date parses fractional and plain ISO timestamps", testUsageResetDateParsing)
+            ,("activation skips desktop sync when disabled", testActivationSkipsDesktopWhenDisabled)
         ]
         var failures = 0
         for (name, test) in tests {
@@ -44,6 +49,37 @@ enum ProfileStoreTests {
         }
         if failures > 0 { print("\(failures) test(s) failed"); Darwin.exit(1) }
         print("\(tests.count) tests passed")
+    }
+
+    static func testFiveHourAlertTracker() throws {
+        var tracker = FiveHourAlertTracker()
+        try check(tracker.evaluate(usedPercent: 50, threshold: 80) == false, "should not fire below threshold")
+        try check(tracker.evaluate(usedPercent: 80, threshold: 80) == true, "should fire on first crossing")
+        try check(tracker.evaluate(usedPercent: 92, threshold: 80) == false, "should not fire again while still above")
+        try check(tracker.evaluate(usedPercent: 10, threshold: 80) == false, "dropping below only rearms")
+        try check(tracker.evaluate(usedPercent: 85, threshold: 80) == true, "should fire again after rearming")
+    }
+
+    static func testFiveHourAlertThreshold() throws {
+        try check(FiveHourAlertThreshold.resolve(0) == 80, "zero should fall back to default")
+        try check(FiveHourAlertThreshold.resolve(150) == 80, "out-of-range should fall back to default")
+        try check(FiveHourAlertThreshold.resolve(55) == 55, "valid threshold should be kept")
+    }
+
+    static func testFiveHourAlertSound() throws {
+        try check(FiveHourAlertSound(defaultsValue: nil) == .standard, "missing sound should default")
+        try check(FiveHourAlertSound(defaultsValue: "bogus") == .standard, "unknown sound should default")
+        try check(FiveHourAlertSound(defaultsValue: "glass") == .glass, "known sound should be parsed")
+    }
+
+    static func testUsageResetDateParsing() throws {
+        // The real endpoint sends microsecond fractional seconds, which the default formatter rejects.
+        let fractional = ClaudeUsageService.parseResetDate("2026-07-20T22:40:00.121846+00:00")
+        try check(fractional != nil, "fractional-second ISO timestamp should parse")
+        let plain = ClaudeUsageService.parseResetDate("2026-07-20T22:40:00Z")
+        try check(plain != nil, "plain ISO timestamp should still parse")
+        try check(ClaudeUsageService.parseResetDate(nil) == nil, "nil should stay nil")
+        try check(ClaudeUsageService.parseResetDate("not a date") == nil, "garbage should not parse")
     }
 
     static func temporaryRoot() throws -> URL {
@@ -310,6 +346,17 @@ enum ProfileStoreTests {
         let result = try await service.activate(profile)
         guard case .failed = result.desktopSync else { throw TestFailure.failed("expected desktopSync to report failure") }
         try check(try store.active()?.id == profile.id, "CLI-side activation was rolled back after a desktop sync failure")
+    }
+
+    static func testActivationSkipsDesktopWhenDisabled() async throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root)
+        let directory = root.appendingPathComponent("config"); try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let profile = Profile(name: "Work", directory: directory); try store.save(profile)
+        let desktopClient = FakeDesktopAppClient()
+        let service = ActivationService(store: store, launchd: FakeLaunchd(), desktopActivator: DesktopAppActivator(client: desktopClient))
+        let result = try await service.activate(profile, syncDesktopApp: false)
+        try check(result.desktopSync == .skipped(.disabledOnSwitch), "desktop sync should be skipped when disabled")
+        try check(desktopClient.launchedWith == nil, "desktop app must not be launched when sync is disabled")
     }
 
     static func testCopyDefaultDesktopSessionIntoFreshProfile() throws {

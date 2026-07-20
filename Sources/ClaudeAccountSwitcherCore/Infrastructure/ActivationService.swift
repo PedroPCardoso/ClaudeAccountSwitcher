@@ -15,7 +15,7 @@ public actor ActivationService {
         self.store = store; self.launchd = launchd; self.desktopActivator = desktopActivator
     }
 
-    public func activate(_ profile: Profile) async throws -> ActivationResult {
+    public func activate(_ profile: Profile, syncDesktopApp: Bool = true) async throws -> ActivationResult {
         guard FileManager.default.fileExists(atPath: profile.directory.path) else { throw ActivationError.missingDirectory }
         let previous = try store.active()
         let updated: Profile
@@ -30,7 +30,7 @@ public actor ActivationService {
             try? launchd.unset()
             throw ActivationError.rolledBack(error)
         }
-        let desktopSync = await desktopActivator.sync(to: updated)
+        let desktopSync = syncDesktopApp ? await desktopActivator.sync(to: updated) : .skipped(.disabledOnSwitch)
         return ActivationResult(profile: updated, desktopSync: desktopSync)
     }
 }

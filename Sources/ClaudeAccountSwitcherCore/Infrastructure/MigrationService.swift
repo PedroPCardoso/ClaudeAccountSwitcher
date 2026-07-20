@@ -22,7 +22,7 @@ public struct MigrationService: Sendable {
         return MigrationPlan(sources: candidates, aliases: zshrc.components(separatedBy: .newlines).filter { $0.contains("alias claude-work=") || $0.contains("alias code-work=") || $0.contains("alias zed-work=") }, desktopSource: desktopSource)
     }
 
-    static func hasRealDesktopSession(at directory: URL) -> Bool {
+    public static func hasRealDesktopSession(at directory: URL) -> Bool {
         let fm = FileManager.default
         let cookies = directory.appendingPathComponent("Cookies")
         if let attributes = try? fm.attributesOfItem(atPath: cookies.path), let size = attributes[.size] as? Int, size > 0 { return true }

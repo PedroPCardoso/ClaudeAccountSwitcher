@@ -1,6 +1,6 @@
 import Foundation
 
-public enum DesktopAppSkipReason: Equatable, Sendable { case appNotInstalled }
+public enum DesktopAppSkipReason: Equatable, Sendable { case appNotInstalled, disabledOnSwitch }
 
 public enum DesktopAppSyncResult: Equatable, Sendable {
     case synced

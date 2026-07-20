@@ -1,6 +1,13 @@
 import AppKit
 import ClaudeAccountSwitcherCore
 
+/// User-facing switch behaviour flags persisted in `UserDefaults`.
+enum AppPreferences {
+    /// When enabled, switching accounts quits and relaunches the native desktop app for the
+    /// chosen profile. Disabled by default so a switch does not disrupt an open desktop app.
+    static let relaunchDesktopOnSwitch = "relaunchDesktopOnSwitch"
+}
+
 @MainActor
 final class MenuBarController: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -16,6 +23,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var preferencesWindowController: PreferencesWindowController?
     private var usageWindowController: UsageWindowController?
     private var usageRefreshTimer: Timer?
+    private var fiveHourAlert = FiveHourAlertTracker()
 
     override init() {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude Account Switcher", isDirectory: true)
@@ -75,9 +83,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
+    private var relaunchDesktopOnSwitch: Bool { UserDefaults.standard.bool(forKey: AppPreferences.relaunchDesktopOnSwitch) }
+
     @objc private func selectProfile(_ sender: NSMenuItem) {
         guard let profile = sender.representedObject as? Profile else { return }
-        Task { do { let result = try await activation.activate(profile); rebuildMenu(); notify(activationResult: result) } catch { showError(error) } }
+        Task { do { let result = try await activation.activate(profile, syncDesktopApp: relaunchDesktopOnSwitch); fiveHourAlert.reset(); rebuildMenu(); notify(activationResult: result) } catch { showError(error) } }
     }
 
     @objc private func addAccount() {
@@ -208,6 +218,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     private func refreshProfileMetadata() {
         let profiles = (try? store.list()) ?? []
+        let activeID = try? store.active()?.id
         Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
             for profile in profiles {
@@ -223,9 +234,58 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                     snapshot = ClaudeUsageSnapshot(fetchedAt: snapshot.fetchedAt, plan: snapshot.plan, quotas: snapshot.quotas, source: snapshot.source, tokens: self.usage.tokenUsage(profileDirectory: profile.directory))
                     updated.usage = snapshot
                     try? self.store.save(updated)
+                    if updated.id == activeID {
+                        let active = updated; let snap = snapshot
+                        await MainActor.run { self.checkFiveHourAlert(profile: active, snapshot: snap) }
+                    }
                 }
             }
             await MainActor.run { self.rebuildMenu(); self.refreshPreferences() }
+        }
+    }
+
+    /// Fires a native alert once when the active account crosses the configured 5-hour usage
+    /// threshold, telling the user when the window frees up so they know how long to wait.
+    private func checkFiveHourAlert(profile: Profile, snapshot: ClaudeUsageSnapshot) {
+        guard let quota = snapshot.quotas.first(where: { $0.key == "Janela 5h" }) else { return }
+        let threshold = FiveHourAlertThreshold.resolve(UserDefaults.standard.double(forKey: FiveHourAlertThreshold.defaultsKey))
+        guard fiveHourAlert.evaluate(usedPercent: quota.usedPercent, threshold: threshold) else { return }
+        notifyFiveHourAlert(profile: profile, percent: quota.usedPercent, threshold: threshold, resetAt: quota.resetAt)
+    }
+
+    private func notifyFiveHourAlert(profile: Profile, percent: Double, threshold: Double, resetAt: Date?) {
+        let pct = Int(percent.rounded()); let thr = Int(threshold.rounded())
+        var message = AppStrings.t(
+            "⚠️ Troque de conta: \(profile.name) está em \(pct)% da janela de 5h (limite \(thr)%)",
+            "⚠️ Switch accounts: \(profile.name) is at \(pct)% of the 5-hour window (threshold \(thr)%)")
+        if let resetAt {
+            let when = fiveHourResetDescription(resetAt)
+            message += AppStrings.t(" — libera \(when)", " — frees up \(when)")
+        }
+        let n = NSUserNotification(); n.title = "Claude Account Switcher"; n.informativeText = message
+        n.soundName = fiveHourAlertSoundName()
+        NSUserNotificationCenter.default.deliver(n)
+    }
+
+    /// "às HH:MM" when the window frees up later today, otherwise "em <data> às HH:MM".
+    private func fiveHourResetDescription(_ resetAt: Date) -> String {
+        let time = DateFormatter(); time.dateStyle = .none; time.timeStyle = .short
+        if Calendar.current.isDateInToday(resetAt) {
+            return AppStrings.t("às \(time.string(from: resetAt))", "at \(time.string(from: resetAt))")
+        }
+        let full = DateFormatter(); full.dateStyle = .short; full.timeStyle = .short
+        return AppStrings.t("em \(full.string(from: resetAt))", "on \(full.string(from: resetAt))")
+    }
+
+    private func fiveHourAlertSoundName() -> String? {
+        switch FiveHourAlertSound(defaultsValue: UserDefaults.standard.string(forKey: FiveHourAlertSound.defaultsKey)) {
+        case .none: return nil
+        case .standard: return NSUserNotificationDefaultSoundName
+        case .basso: return "Basso"
+        case .glass: return "Glass"
+        case .hero: return "Hero"
+        case .ping: return "Ping"
+        case .sosumi: return "Sosumi"
         }
     }
 
@@ -250,7 +310,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     private func activateFromPreferences(_ profile: Profile) {
         Task {
-            do { let result = try await activation.activate(profile); rebuildMenu(); refreshPreferences(); notify(activationResult: result) }
+            do { let result = try await activation.activate(profile, syncDesktopApp: relaunchDesktopOnSwitch); fiveHourAlert.reset(); rebuildMenu(); refreshPreferences(); notify(activationResult: result) }
             catch { showError(error) }
         }
     }
@@ -289,7 +349,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         Task {
             do {
                 if profile.id == activeID, let replacement = profiles.first(where: { $0.id != profile.id }) {
-                    _ = try await activation.activate(replacement)
+                    _ = try await activation.activate(replacement, syncDesktopApp: relaunchDesktopOnSwitch); fiveHourAlert.reset()
                 }
                 try store.remove(profile)
                 rebuildMenu(); refreshPreferences(); notify("Perfil removido")
