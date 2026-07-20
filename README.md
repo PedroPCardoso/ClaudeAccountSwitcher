@@ -1,10 +1,14 @@
-# Claude Account Switcher 1.1.0
+# Claude Account Switcher 1.2.0
 
 App nativo de barra de menus para alternar entre perfis isolados do Claude Code no macOS. O perfil selecionado vale para novas sessões; sessões já abertas continuam intactas.
 
-Release atual: **1.1.0**. O DMG distribuído contém um binário universal para Apple Silicon e Intel quando o build é executado em um ambiente macOS com suporte aos dois targets.
+Release atual: **1.2.0**. O DMG distribuído contém um binário universal para Apple Silicon e Intel quando o build é executado em um ambiente macOS com suporte aos dois targets.
 
-Download direto: [Claude-Account-Switcher-1.1.0.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.1.0.dmg)
+Download direto: [Claude-Account-Switcher-1.2.0.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.2.0.dmg)
+
+### Uso real Pro/Max
+
+Nas Preferências, o app consulta a cota OAuth do Claude Code (janela de 5 horas e semanal) usando o mesmo endpoint adotado pelo 9router. Quando o perfil usa 9router, a conexão OAuth local em `~/.9router/db/data.sqlite` é usada apenas se existir uma única conexão Claude ativa; com várias conexões, cada perfil precisa ter seu próprio token OAuth. O endpoint é de consumidor e pode mudar sem aviso.
 
 ## Estado atual
 

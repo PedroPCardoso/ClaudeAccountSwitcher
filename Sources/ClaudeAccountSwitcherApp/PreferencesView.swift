@@ -73,6 +73,15 @@ struct PreferencesView: View {
                 Text(statusLabel(profile.health))
                     .font(.caption2)
                     .foregroundStyle(statusColor(profile.health))
+                if let usage = profile.usage {
+                    Text(usage.quotas.map { quotaText($0) }.joined(separator: "  •  "))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Uso: indisponível até autenticar OAuth")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Spacer()
@@ -121,5 +130,12 @@ struct PreferencesView: View {
         case .expired, .unavailable: return .orange
         case .unknown: return .secondary
         }
+    }
+
+    private func quotaText(_ quota: ClaudeQuota) -> String {
+        let percent = "\(Int(quota.usedPercent.rounded()))%"
+        guard let resetAt = quota.resetAt else { return "\(quota.key): \(percent) usado" }
+        let formatter = DateFormatter(); formatter.dateStyle = .none; formatter.timeStyle = .short
+        return "\(quota.key): \(percent) usado (renova \(formatter.string(from: resetAt)))"
     }
 }

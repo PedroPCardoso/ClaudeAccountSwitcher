@@ -8,6 +8,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private let store: ProfileStore
     private let activation: ActivationService
     private let auth: ClaudeAuthService
+    private let usage = ClaudeUsageService()
     private let migration: MigrationService
     private let shell: ShellIntegrationManager
     private let locator: ClaudeLocator
@@ -173,7 +174,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     private func refreshProfileMetadata() {
         let profiles = (try? store.list()) ?? []
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
             for profile in profiles {
                 guard let status = try? self.auth.status(profileDirectory: profile.directory) else { continue }
@@ -183,8 +184,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 updated.kind = status.kind
                 updated.health = status.isAuthenticated ? .ready : .expired
                 try? self.store.save(updated)
+                if let snapshot = try? await self.usage.fetch(profileDirectory: profile.directory) {
+                    updated.usage = snapshot
+                    try? self.store.save(updated)
+                }
             }
-            DispatchQueue.main.async { self.rebuildMenu(); self.refreshPreferences() }
+            await MainActor.run { self.rebuildMenu(); self.refreshPreferences() }
         }
     }
 
