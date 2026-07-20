@@ -16,6 +16,7 @@ else
   cp "$BIN_DIR/ClaudeAccountSwitcher" "$APP/Contents/MacOS/ClaudeAccountSwitcher"
 fi
 cp Resources/claude-launcher "$APP/Contents/Resources/claude-launcher"
+cp Resources/claude-account-switcher-logo.png "$APP/Contents/Resources/claude-account-switcher-logo.png"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

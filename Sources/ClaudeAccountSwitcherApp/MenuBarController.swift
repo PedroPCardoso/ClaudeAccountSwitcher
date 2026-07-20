@@ -31,7 +31,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "person.2.circle", accessibilityDescription: "Claude accounts")
+        if let logoURL = Bundle.main.url(forResource: "claude-account-switcher-logo", withExtension: "png"), let logo = NSImage(contentsOf: logoURL) {
+            logo.size = NSSize(width: 18, height: 18)
+            logo.isTemplate = false
+            statusItem.button?.image = logo
+            statusItem.button?.imageScaling = .scaleProportionallyUpOrDown
+        } else {
+            statusItem.button?.image = NSImage(systemSymbolName: "person.2.circle", accessibilityDescription: "Claude accounts")
+        }
         installShortcutMonitor(); rebuildMenu(); refreshProfileMetadata()
         if let official = try? locator.locate() { try? shell.install(home: FileManager.default.homeDirectoryForCurrentUser, officialBinary: official) }
         if let active = try? store.active() { try? SystemLaunchdEnvironment().set(active.directory.path) }
