@@ -1,5 +1,7 @@
 # Claude Account Switcher 1.2.0
 
+<img src="docs/assets/claude-account-switcher-logo.png" alt="Claude Account Switcher — logo" width="180">
+
 App nativo de barra de menus para alternar entre perfis isolados do Claude Code no macOS. O perfil selecionado vale para novas sessões; sessões já abertas continuam intactas.
 
 Release atual: **1.2.0**. O DMG distribuído contém um binário universal para Apple Silicon e Intel quando o build é executado em um ambiente macOS com suporte aos dois targets.
