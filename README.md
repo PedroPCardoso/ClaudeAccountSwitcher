@@ -14,6 +14,12 @@ O menu **Ver uso do Claude…** abre uma janela interna com cartões por conta, 
 
 Também soma os tokens registrados nas sessões locais de cada perfil (entrada, saída e cache), deixando claro que essa métrica é consumo registrado pelo Claude Code, não um limite de tokens da assinatura.
 
+### Seletor de contas
+
+Ao clicar no ícone da barra, o seletor mostra o uso de cada conta diretamente no menu:
+
+![Exemplo do seletor de contas com cotas e tokens](docs/assets/menu-usage-example.png)
+
 ## Estado atual
 
 O projeto já contém o núcleo de perfis, persistência atômica, descoberta do Claude Code, autenticação via `claude auth`, launcher, ativação com rollback, migração, login item e menu de barra. O ambiente usado para este build tem Swift Command Line Tools, mas não tem Xcode/XCTest; por isso o pacote inclui um runner de testes executável.
