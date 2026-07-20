@@ -54,7 +54,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let profiles = (try? store.list()) ?? []
         let active = try? store.active()?.id
         if profiles.isEmpty {
-            menu.addItem(withTitle: "Nenhum perfil importado", action: nil, keyEquivalent: "")
+            menu.addItem(withTitle: AppStrings.t("Nenhum perfil importado", "No profiles imported"), action: nil, keyEquivalent: "")
         } else {
             for profile in profiles {
                 let item = NSMenuItem(title: profile.name + (profile.email.map { " — \($0)" } ?? ""), action: #selector(selectProfile(_:)), keyEquivalent: "")
@@ -66,18 +66,18 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             }
         }
         menu.addItem(.separator())
-        let usageItem = NSMenuItem(title: "Ver uso no Claude…", action: #selector(openUsage), keyEquivalent: "")
+        let usageItem = NSMenuItem(title: AppStrings.t("Ver uso no Claude…", "View Claude usage…"), action: #selector(openUsage), keyEquivalent: "")
         usageItem.target = self
         usageItem.toolTip = "Abre o painel visual com uso e tokens de todas as contas"
         menu.addItem(usageItem)
-        menu.addItem(withTitle: "Preferências…", action: #selector(preferences), keyEquivalent: ","); menu.items.last?.target = self
-        menu.addItem(withTitle: "Sair", action: #selector(quit), keyEquivalent: "q"); menu.items.last?.target = self
+        menu.addItem(withTitle: AppStrings.t("Preferências…", "Preferences…"), action: #selector(preferences), keyEquivalent: ","); menu.items.last?.target = self
+        menu.addItem(withTitle: AppStrings.t("Sair", "Quit"), action: #selector(quit), keyEquivalent: "q"); menu.items.last?.target = self
         statusItem.menu = menu
     }
 
     @objc private func selectProfile(_ sender: NSMenuItem) {
         guard let profile = sender.representedObject as? Profile else { return }
-        Task { do { _ = try await activation.activate(profile); rebuildMenu(); notify("Perfil ativo: \(profile.name)") } catch { showError(error) } }
+        Task { do { _ = try await activation.activate(profile); rebuildMenu(); notify(AppStrings.t("Perfil ativo: \(profile.name)", "Active profile: \(profile.name)")) } catch { showError(error) } }
     }
 
     @objc private func addAccount() {

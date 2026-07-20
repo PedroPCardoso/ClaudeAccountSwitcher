@@ -7,15 +7,15 @@ struct UsageView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Uso do Claude").font(.title2.weight(.semibold))
-            Text("Cotas reais das contas Pro/Max autenticadas no Claude Code.")
+            Text(AppStrings.t("Uso do Claude", "Claude Usage")).font(.title2.weight(.semibold))
+            Text(AppStrings.t("Cotas reais das contas Pro/Max autenticadas no Claude Code.", "Live quotas for authenticated Claude Pro/Max accounts."))
                 .font(.subheadline).foregroundStyle(.secondary)
 
             if profiles.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "person.crop.circle.badge.exclamationmark").font(.largeTitle).foregroundStyle(.secondary)
-                    Text("Nenhuma conta").font(.headline)
-                    Text("Adicione uma conta para acompanhar o uso.").font(.subheadline).foregroundStyle(.secondary)
+                    Text(AppStrings.t("Nenhuma conta", "No accounts")).font(.headline)
+                    Text(AppStrings.t("Adicione uma conta para acompanhar o uso.", "Add an account to monitor usage.")).font(.subheadline).foregroundStyle(.secondary)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -25,7 +25,7 @@ struct UsageView: View {
                     .padding(.vertical, 2)
                 }
             }
-            Text("Os percentuais são consultados diretamente na conta selecionada. O endpoint de uso é uma interface de consumidor e pode sofrer alterações.")
+            Text(AppStrings.t("Os percentuais são consultados diretamente na conta selecionada. O endpoint de uso é uma interface de consumidor e pode sofrer alterações.", "Percentages are queried directly from the selected account. The usage endpoint is a consumer interface and may change."))
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(20)
@@ -40,9 +40,9 @@ struct UsageView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
                         Text(profile.name).font(.headline)
-                        if activeID == profile.id { Text("ATIVA").font(.caption2.weight(.bold)).foregroundStyle(.blue) }
+                        if activeID == profile.id { Text(AppStrings.t("ATIVA", "ACTIVE")).font(.caption2.weight(.bold)).foregroundStyle(.blue) }
                     }
-                    Text(profile.email ?? "E-mail não identificado").font(.caption).foregroundStyle(.secondary)
+                    Text(profile.email ?? AppStrings.t("E-mail não identificado", "Email not identified")).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if let fetchedAt = profile.usage?.fetchedAt {
@@ -75,7 +75,7 @@ struct UsageView: View {
             HStack {
                 Text(quota.key).font(.subheadline.weight(.medium))
                 Spacer()
-                Text("\(Int(quota.usedPercent.rounded()))% usado").font(.subheadline.weight(.semibold))
+                Text(AppStrings.t("\(Int(quota.usedPercent.rounded()))% usado", "\(Int(quota.usedPercent.rounded()))% used")).font(.subheadline.weight(.semibold))
             }
             ProgressView(value: min(max(quota.usedPercent / 100, 0), 1))
                 .tint(quota.usedPercent >= 90 ? .red : quota.usedPercent >= 70 ? .orange : .blue)

@@ -15,16 +15,16 @@ struct PreferencesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Contas Claude").font(.title2.weight(.semibold))
-            Text("As contas ficam isoladas. A conta ativa será usada por novas sessões do Claude Code.")
+            Text(AppStrings.t("Contas Claude", "Claude Accounts")).font(.title2.weight(.semibold))
+            Text(AppStrings.t("As contas ficam isoladas. A conta ativa será usada por novas sessões do Claude Code.", "Accounts are isolated. The active account is used by new Claude Code sessions."))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
             if profiles.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "person.crop.circle.badge.exclamationmark").font(.largeTitle).foregroundStyle(.secondary)
-                    Text("Nenhuma conta cadastrada").font(.headline)
-                    Text("Adicione ou importe uma conta pelo menu da barra de ferramentas.").font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Text(AppStrings.t("Nenhuma conta cadastrada", "No accounts configured")).font(.headline)
+                    Text(AppStrings.t("Adicione ou importe uma conta pelo menu da barra de ferramentas.", "Add or import an account from the menu bar.")).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -38,9 +38,9 @@ struct PreferencesView: View {
 
             Divider()
             HStack {
-                Button("Adicionar conta…") { onAdd() }.buttonStyle(.borderedProminent)
-                Button("Importar perfil…") { onImport() }.buttonStyle(.bordered)
-                Button("Migrar perfis…") { onMigrate() }.buttonStyle(.bordered)
+                Button(AppStrings.t("Adicionar conta…", "Add account…")) { onAdd() }.buttonStyle(.borderedProminent)
+                Button(AppStrings.t("Importar perfil…", "Import profile…")) { onImport() }.buttonStyle(.bordered)
+                Button(AppStrings.t("Migrar perfis…", "Migrate profiles…")) { onMigrate() }.buttonStyle(.bordered)
                 Spacer()
             }
             HStack {
@@ -48,7 +48,7 @@ struct PreferencesView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Desinstalar aplicativo…", role: .destructive) { onUninstall() }
+                Button(AppStrings.t("Desinstalar aplicativo…", "Uninstall app…"), role: .destructive) { onUninstall() }
                     .buttonStyle(.bordered)
             }
         }
