@@ -14,6 +14,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private let locator: ClaudeLocator
     private let loginItem = LoginItemService()
     private var preferencesWindowController: PreferencesWindowController?
+    private var usageWindowController: UsageWindowController?
 
     override init() {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude Account Switcher", isDirectory: true)
@@ -129,10 +130,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openUsage() {
-        guard let url = URL(string: "https://claude.ai/settings/usage"), NSWorkspace.shared.open(url) else {
-            showError(NSError(domain: "Claude Account Switcher", code: 3, userInfo: [NSLocalizedDescriptionKey: "Não foi possível abrir a página oficial de uso do Claude."]))
-            return
-        }
+        let profiles = (try? store.list()) ?? []
+        let activeID = try? store.active()?.id
+        if usageWindowController == nil { usageWindowController = UsageWindowController(profiles: profiles, activeID: activeID) }
+        else { usageWindowController?.update(profiles: profiles, activeID: activeID) }
+        usageWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        refreshProfileMetadata()
     }
 
     @objc private func migrateExisting() {
@@ -172,6 +176,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
         preferencesWindowController?.update(profiles: profiles, activeID: activeID)
+        usageWindowController?.update(profiles: profiles, activeID: activeID)
     }
 
     private func refreshProfileMetadata() {

@@ -10,6 +10,8 @@ Download direto: [Claude-Account-Switcher-1.2.0.dmg](https://github.com/PedroPCa
 
 Nas Preferências e ao passar o mouse sobre cada conta no menu da barra, o app consulta diretamente a cota OAuth do Claude Code (janela de 5 horas e semanal). Cada perfil usa exclusivamente a credencial armazenada no Keychain do próprio diretório `CLAUDE_CONFIG_DIR`; nenhuma instalação de 9router ou outro gateway é necessária. A consulta usa um endpoint de consumidor da Anthropic e pode mudar sem aviso.
 
+O menu **Ver uso do Claude…** abre uma janela interna com cartões por conta, barras visuais de progresso, percentuais usados e horários de renovação.
+
 ## Estado atual
 
 O projeto já contém o núcleo de perfis, persistência atômica, descoberta do Claude Code, autenticação via `claude auth`, launcher, ativação com rollback, migração, login item e menu de barra. O ambiente usado para este build tem Swift Command Line Tools, mas não tem Xcode/XCTest; por isso o pacote inclui um runner de testes executável.
