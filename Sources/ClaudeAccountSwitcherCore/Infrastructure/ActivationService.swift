@@ -2,24 +2,35 @@ import Foundation
 
 public enum ActivationError: Error { case missingDirectory, rolledBack(Error) }
 
+public struct ActivationResult: Sendable, Equatable {
+    public let profile: Profile
+    public let desktopSync: DesktopAppSyncResult
+}
+
 public actor ActivationService {
     private let store: ProfileStore
     private let launchd: LaunchdEnvironmentClient
-    public init(store: ProfileStore, launchd: LaunchdEnvironmentClient = SystemLaunchdEnvironment()) { self.store = store; self.launchd = launchd }
+    private let desktopActivator: DesktopAppActivator
+    public init(store: ProfileStore, launchd: LaunchdEnvironmentClient = SystemLaunchdEnvironment(), desktopActivator: DesktopAppActivator = DesktopAppActivator()) {
+        self.store = store; self.launchd = launchd; self.desktopActivator = desktopActivator
+    }
 
-    public func activate(_ profile: Profile) throws -> Profile {
+    public func activate(_ profile: Profile) async throws -> ActivationResult {
         guard FileManager.default.fileExists(atPath: profile.directory.path) else { throw ActivationError.missingDirectory }
         let previous = try store.active()
+        let updated: Profile
         do {
             try store.setActive(ActiveProfile(id: profile.id, directory: profile.directory))
             try launchd.set(profile.directory.path)
-            var updated = profile; updated.lastUsedAt = .now; updated.health = .ready; try store.save(updated)
-            return updated
+            var candidate = profile; candidate.lastUsedAt = .now; candidate.health = .ready; try store.save(candidate)
+            updated = candidate
         } catch {
             if let previous { try? store.setActive(previous) }
             else { try? FileManager.default.removeItem(at: store.activeURL) }
             try? launchd.unset()
             throw ActivationError.rolledBack(error)
         }
+        let desktopSync = await desktopActivator.sync(to: updated)
+        return ActivationResult(profile: updated, desktopSync: desktopSync)
     }
 }

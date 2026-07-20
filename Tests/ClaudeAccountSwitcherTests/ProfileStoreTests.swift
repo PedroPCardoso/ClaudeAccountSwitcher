@@ -28,6 +28,8 @@ enum ProfileStoreTests {
             ,("desktop activator terminates the running app then launches with the profile directory", testDesktopActivatorTerminatesAndLaunches)
             ,("desktop activator reports failure when termination times out", testDesktopActivatorReportsTerminationFailure)
             ,("desktop activator reports failure when launch throws", testDesktopActivatorReportsLaunchFailure)
+            ,("activation syncs the desktop app after a successful CLI switch", testActivationSyncsDesktopApp)
+            ,("a desktop app sync failure does not roll back the CLI switch", testActivationDesktopFailureDoesNotRollBackCLI)
         ]
         var failures = 0
         for (name, test) in tests {
@@ -237,5 +239,29 @@ enum ProfileStoreTests {
         let profile = Profile(name: "Work", directory: URL(fileURLWithPath: "/tmp/Profiles/id/config"))
         let result = await activator.sync(to: profile)
         guard case .failed = result else { throw TestFailure.failed("expected a failure result when launch throws, got \(result)") }
+    }
+
+    static func testActivationSyncsDesktopApp() async throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root)
+        let directory = root.appendingPathComponent("config"); try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let profile = Profile(name: "Work", directory: directory); try store.save(profile)
+        let desktopClient = FakeDesktopAppClient()
+        let service = ActivationService(store: store, launchd: FakeLaunchd(), desktopActivator: DesktopAppActivator(client: desktopClient))
+        let result = try await service.activate(profile)
+        try check(result.profile.id == profile.id, "activation result did not carry the activated profile")
+        try check(result.desktopSync == .synced, "desktop sync did not run after a successful CLI activation")
+        try check(desktopClient.launchedWith?.userDataDirectory.path == profile.desktopDirectory.path, "desktop app was not launched with the profile's desktop directory")
+        try? FileManager.default.removeItem(at: profile.desktopDirectory)
+    }
+
+    static func testActivationDesktopFailureDoesNotRollBackCLI() async throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root)
+        let directory = root.appendingPathComponent("config"); try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let profile = Profile(name: "Work", directory: directory); try store.save(profile)
+        let desktopClient = FakeDesktopAppClient(); desktopClient.launchError = TestFailure.failed("desktop launch boom")
+        let service = ActivationService(store: store, launchd: FakeLaunchd(), desktopActivator: DesktopAppActivator(client: desktopClient))
+        let result = try await service.activate(profile)
+        guard case .failed = result.desktopSync else { throw TestFailure.failed("expected desktopSync to report failure") }
+        try check(try store.active()?.id == profile.id, "CLI-side activation was rolled back after a desktop sync failure")
     }
 }
