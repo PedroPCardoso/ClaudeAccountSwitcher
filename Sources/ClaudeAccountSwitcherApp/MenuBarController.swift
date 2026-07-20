@@ -15,6 +15,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private let loginItem = LoginItemService()
     private var preferencesWindowController: PreferencesWindowController?
     private var usageWindowController: UsageWindowController?
+    private var usageRefreshTimer: Timer?
 
     override init() {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude Account Switcher", isDirectory: true)
@@ -40,6 +41,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             statusItem.button?.image = NSImage(systemSymbolName: "person.2.circle", accessibilityDescription: "Claude accounts")
         }
         installShortcutMonitor(); rebuildMenu(); refreshProfileMetadata()
+        usageRefreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshProfileMetadata() }
+        }
         if let official = try? locator.locate() { try? shell.install(home: FileManager.default.homeDirectoryForCurrentUser, officialBinary: official) }
         if let active = try? store.active() { try? SystemLaunchdEnvironment().set(active.directory.path) }
         try? loginItem.setEnabled(true)
