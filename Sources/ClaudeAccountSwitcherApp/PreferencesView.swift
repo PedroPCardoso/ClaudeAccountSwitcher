@@ -5,6 +5,7 @@ struct PreferencesView: View {
     let profiles: [Profile]
     let activeID: UUID?
     let onActivate: (Profile) -> Void
+    let onRelogin: (Profile) -> Void
     let onRename: (Profile) -> Void
     let onRemove: (Profile) -> Void
 
@@ -55,7 +56,7 @@ struct PreferencesView: View {
                             .foregroundStyle(.blue)
                     }
                 }
-                Text(profile.email ?? profileType(profile.kind))
+                Text(profile.email.map { "E-mail: \($0)" } ?? "E-mail não identificado • \(profileType(profile.kind))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(statusLabel(profile.health))
@@ -70,6 +71,11 @@ struct PreferencesView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
             }
+            Button { onRelogin(profile) } label: {
+                Image(systemName: "person.crop.circle.badge.arrow.trianglehead.2.clockwise.rotate.90")
+            }
+            .buttonStyle(.borderless)
+            .help("Refazer login")
             Button { onRename(profile) } label: {
                 Image(systemName: "pencil")
             }

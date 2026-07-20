@@ -152,6 +152,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 profiles: profiles,
                 activeID: activeID,
                 onActivate: { [weak self] profile in self?.activateFromPreferences(profile) },
+                onRelogin: { [weak self] profile in self?.reloginFromPreferences(profile) },
                 onRename: { [weak self] profile in self?.renameSpecificProfile(profile) },
                 onRemove: { [weak self] profile in self?.removeFromPreferences(profile) }
             )
@@ -172,6 +173,26 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         Task {
             do { _ = try await activation.activate(profile); rebuildMenu(); refreshPreferences(); notify("Perfil ativo: \(profile.name)") }
             catch { showError(error) }
+        }
+    }
+
+    private func reloginFromPreferences(_ profile: Profile) {
+        let alert = NSAlert(); alert.messageText = "Refazer login"; alert.informativeText = "O navegador será aberto para autenticar novamente a conta \(profile.email ?? profile.name). O nome e o perfil ativo não serão alterados."; alert.addButton(withTitle: "Continuar"); alert.addButton(withTitle: "Cancelar")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        notify("Aguardando login de \(profile.name)…")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            do {
+                try self.auth.login(profileDirectory: profile.directory, kind: profile.kind)
+                let status = try self.auth.status(profileDirectory: profile.directory)
+                var updated = profile
+                updated.email = status.email ?? profile.email
+                updated.organization = status.organization ?? profile.organization
+                updated.kind = status.kind
+                updated.health = status.isAuthenticated ? .ready : .expired
+                try self.store.save(updated)
+                DispatchQueue.main.async { self.rebuildMenu(); self.refreshPreferences(); self.notify("Login atualizado: \(updated.email ?? updated.name)") }
+            } catch { DispatchQueue.main.async { self.showError(error) } }
         }
     }
 
