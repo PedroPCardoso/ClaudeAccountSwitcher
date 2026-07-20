@@ -1,0 +1,4 @@
+#!/bin/sh
+# Runtime launcher is rendered by ShellIntegrationManager with concrete paths.
+echo "Claude Account Switcher: launcher não foi instalado; abra o app para reparar a integração." >&2
+exit 78

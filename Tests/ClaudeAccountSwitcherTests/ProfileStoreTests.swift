@@ -1,0 +1,128 @@
+import Foundation
+import ClaudeAccountSwitcherCore
+import Darwin
+
+enum TestFailure: Error, CustomStringConvertible {
+    case failed(String)
+    var description: String { if case .failed(let message) = self { return message }; return "test failed" }
+}
+
+@main
+enum ProfileStoreTests {
+    static func main() async {
+        let tests: [(String, () async throws -> Void)] = [
+            ("profile JSON round trip", testProfileRoundTrip),
+            ("store persists profiles and active profile", testStorePersists),
+            ("managed directory permissions", testManagedDirectory)
+            ,("process runner preserves environment", testProcessRunner)
+            ,("shell integration is idempotent", testShellIntegration)
+            ,("activation rolls back on launchd failure", testActivationRollback)
+            ,("migration preserves hidden Claude files", testMigration)
+            ,("launcher selects active profile", testLauncher)
+        ]
+        var failures = 0
+        for (name, test) in tests {
+            do { try await test(); print("PASS \(name)") }
+            catch { failures += 1; print("FAIL \(name): \(error)") }
+        }
+        if failures > 0 { print("\(failures) test(s) failed"); Darwin.exit(1) }
+        print("\(tests.count) tests passed")
+    }
+
+    static func temporaryRoot() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    static func check(_ condition: Bool, _ message: String) throws {
+        if !condition { throw TestFailure.failed(message) }
+    }
+
+    static func testProfileRoundTrip() throws {
+        let profile = Profile(id: UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!, name: "Work", email: "work@example.com", organization: "Acme", color: "blue", icon: "briefcase", kind: .custom, directory: URL(fileURLWithPath: "/tmp/work"), createdAt: .distantPast, lastUsedAt: nil, health: .ready)
+        let decoded = try JSONDecoder().decode(Profile.self, from: JSONEncoder().encode(profile))
+        try check(decoded == profile, "profile did not round trip")
+    }
+
+    static func testStorePersists() throws {
+        let store = try ProfileStore(root: try temporaryRoot())
+        let profile = Profile(name: "Personal", directory: URL(fileURLWithPath: "/tmp/personal"))
+        try store.save(profile); try store.setActive(ActiveProfile(id: profile.id, directory: profile.directory))
+        let stored = try store.list()
+        try check(stored.count == 1 && stored[0].id == profile.id && stored[0].name == profile.name, "profile list mismatch")
+        try check(store.active()?.id == profile.id, "active profile mismatch")
+    }
+
+    static func testManagedDirectory() throws {
+        let store = try ProfileStore(root: try temporaryRoot())
+        let url = try store.createManagedDirectory(id: UUID())
+        let permissions = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        try check(permissions?.intValue == 0o700, "managed directory is not user-only")
+    }
+
+    static func testProcessRunner() throws {
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("claude-test-\(UUID().uuidString).sh")
+        try "#!/bin/sh\nprintf '%s' \"$CLAUDE_CONFIG_DIR\"".data(using: .utf8)!.write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        defer { try? FileManager.default.removeItem(at: script) }
+        let result = try ProcessRunner().run(executable: script, environment: ["CLAUDE_CONFIG_DIR": "/tmp/profile"])
+        try check(result.stdout == "/tmp/profile", "runner did not pass environment")
+    }
+
+    static func testShellIntegration() throws {
+        let home = try temporaryRoot(); let app = home.appendingPathComponent("support")
+        let manager = ShellIntegrationManager(appSupport: app)
+        let zprofile = home.appendingPathComponent(".zprofile")
+        try "alias keep='echo keep'\n".write(to: zprofile, atomically: true, encoding: .utf8)
+        try manager.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"))
+        let first = try String(contentsOf: zprofile)
+        try manager.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"))
+        let second = try String(contentsOf: zprofile)
+        try check(first == second && second.contains("alias keep") && second.components(separatedBy: ShellIntegrationManager.startMarker).count == 2, "shell install was not idempotent")
+    }
+
+    final class FakeLaunchd: LaunchdEnvironmentClient, @unchecked Sendable {
+        var values: [String] = []; var shouldFail = false
+        func set(_ value: String) throws { if shouldFail { throw TestFailure.failed("launchd failure") }; values.append(value) }
+        func unset() throws { values.append("unset") }
+    }
+
+    static func testActivationRollback() async throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root); let fake = FakeLaunchd(); fake.shouldFail = true
+        let directory = root.appendingPathComponent("config"); try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let profile = Profile(name: "Failing", directory: directory)
+        try store.save(profile)
+        let service = ActivationService(store: store, launchd: fake)
+        do { _ = try await service.activate(profile); throw TestFailure.failed("activation unexpectedly succeeded") }
+        catch ActivationError.rolledBack { }
+        try check(try store.active() == nil, "active profile was not rolled back")
+    }
+
+    static func testMigration() throws {
+        let home = try temporaryRoot(); let source = home.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try "secret-shaped config".write(to: source.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        let store = try ProfileStore(root: home.appendingPathComponent("managed")); let plan = try MigrationService(store: store).preview(home: home)
+        let report = try MigrationService(store: store).execute(plan)
+        let copied = report.imported[0].appendingPathComponent(".claude.json")
+        try check(FileManager.default.fileExists(atPath: copied.path), "hidden config was not migrated")
+        try check(FileManager.default.fileExists(atPath: source.appendingPathComponent(".claude.json").path), "source was modified")
+    }
+
+    static func testLauncher() throws {
+        let root = try temporaryRoot(); let app = root.appendingPathComponent("app-support")
+        let store = try ProfileStore(root: app); let profileDir = root.appendingPathComponent("profile")
+        try FileManager.default.createDirectory(at: profileDir, withIntermediateDirectories: true)
+        let profile = Profile(name: "Active", directory: profileDir); try store.save(profile); try store.setActive(ActiveProfile(id: profile.id, directory: profile.directory))
+        let shell = ShellIntegrationManager(appSupport: app); let home = root.appendingPathComponent("home"); try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try shell.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"))
+        do {
+            let result = try ProcessRunner().run(executable: shell.launcherURL(), arguments: ["hello"])
+            try check(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "hello", "launcher did not execute official binary")
+        } catch {
+            let script = String(data: try Data(contentsOf: shell.launcherURL()), encoding: .utf8) ?? "script unavailable"
+            throw TestFailure.failed("launcher failed: \(error); script=\(script)")
+        }
+    }
+}
