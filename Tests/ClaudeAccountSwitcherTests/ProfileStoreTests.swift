@@ -33,6 +33,9 @@ enum ProfileStoreTests {
             ,("migration detects a real desktop app session but not an empty one", testMigrationDetectsDesktopSession)
             ,("migration imports the desktop app session into the chosen profile", testMigrationImportsDesktopSession)
             ,("migration preview finds no desktop session when the folder is absent", testMigrationNoDesktopSessionWhenAbsent)
+            ,("copies the default desktop session into a profile that has none yet", testCopyDefaultDesktopSessionIntoFreshProfile)
+            ,("does not overwrite a profile that already has a real desktop session", testCopyDefaultDesktopSessionSkipsExistingSession)
+            ,("does not copy when the default desktop directory has no real session", testCopyDefaultDesktopSessionSkipsWhenSourceEmpty)
         ]
         var failures = 0
         for (name, test) in tests {
@@ -307,5 +310,50 @@ enum ProfileStoreTests {
         let result = try await service.activate(profile)
         guard case .failed = result.desktopSync else { throw TestFailure.failed("expected desktopSync to report failure") }
         try check(try store.active()?.id == profile.id, "CLI-side activation was rolled back after a desktop sync failure")
+    }
+
+    static func testCopyDefaultDesktopSessionIntoFreshProfile() throws {
+        let home = try temporaryRoot()
+        let defaultDesktopData = home.appendingPathComponent("Library/Application Support/Claude")
+        try FileManager.default.createDirectory(at: defaultDesktopData, withIntermediateDirectories: true)
+        try "cookie-bytes".write(to: defaultDesktopData.appendingPathComponent("Cookies"), atomically: true, encoding: .utf8)
+
+        let store = try ProfileStore(root: home.appendingPathComponent("managed"))
+        let directory = try store.createManagedDirectory(id: UUID())
+        let profile = Profile(name: "Personal", directory: directory)
+
+        let copied = try MigrationService(store: store).copyDefaultDesktopSessionIfAvailable(into: profile, home: home)
+        try check(copied, "expected a copy to happen for a profile with no desktop session")
+        try check(FileManager.default.fileExists(atPath: profile.desktopDirectory.appendingPathComponent("Cookies").path), "session was not copied into the profile's desktop directory")
+        try check(FileManager.default.fileExists(atPath: defaultDesktopData.appendingPathComponent("Cookies").path), "original desktop app data was modified or removed")
+    }
+
+    static func testCopyDefaultDesktopSessionSkipsExistingSession() throws {
+        let home = try temporaryRoot()
+        let defaultDesktopData = home.appendingPathComponent("Library/Application Support/Claude")
+        try FileManager.default.createDirectory(at: defaultDesktopData, withIntermediateDirectories: true)
+        try "cookie-bytes".write(to: defaultDesktopData.appendingPathComponent("Cookies"), atomically: true, encoding: .utf8)
+
+        let store = try ProfileStore(root: home.appendingPathComponent("managed"))
+        let directory = try store.createManagedDirectory(id: UUID())
+        let profile = Profile(name: "Personal", directory: directory)
+        try FileManager.default.createDirectory(at: profile.desktopDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try "existing-session-cookie-bytes".write(to: profile.desktopDirectory.appendingPathComponent("Cookies"), atomically: true, encoding: .utf8)
+
+        let copied = try MigrationService(store: store).copyDefaultDesktopSessionIfAvailable(into: profile, home: home)
+        try check(!copied, "expected no copy when the profile already has a real desktop session")
+        let preserved = try String(contentsOf: profile.desktopDirectory.appendingPathComponent("Cookies"), encoding: .utf8)
+        try check(preserved == "existing-session-cookie-bytes", "existing desktop session was overwritten")
+    }
+
+    static func testCopyDefaultDesktopSessionSkipsWhenSourceEmpty() throws {
+        let home = try temporaryRoot()
+        let store = try ProfileStore(root: home.appendingPathComponent("managed"))
+        let directory = try store.createManagedDirectory(id: UUID())
+        let profile = Profile(name: "Personal", directory: directory)
+
+        let copied = try MigrationService(store: store).copyDefaultDesktopSessionIfAvailable(into: profile, home: home)
+        try check(!copied, "expected no copy when the default desktop directory has no real session")
+        try check(!FileManager.default.fileExists(atPath: profile.desktopDirectory.path), "desktop directory should not be created when there is nothing to copy")
     }
 }

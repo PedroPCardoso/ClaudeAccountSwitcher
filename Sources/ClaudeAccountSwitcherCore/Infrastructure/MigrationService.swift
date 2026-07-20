@@ -31,6 +31,29 @@ public struct MigrationService: Sendable {
         return false
     }
 
+    private static func copyDesktopSessionContents(from source: URL, to destination: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: destination, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let entries = try fm.contentsOfDirectory(at: source, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [])
+        for entry in entries {
+            if (try entry.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true { throw NSError(domain: "ClaudeAccountSwitcher", code: 1001, userInfo: [NSLocalizedDescriptionKey: "symbolic links are not imported"]) }
+            try fm.copyItem(at: entry, to: destination.appendingPathComponent(entry.lastPathComponent))
+        }
+    }
+
+    /// Copies the default desktop app session into `profile`'s desktop directory, when the profile
+    /// has none of its own yet and a real session exists at the default location. Used right after a
+    /// new account finishes logging in through the switcher, since the CLI's OAuth token cannot log the
+    /// Electron desktop app in by itself. Returns whether a copy happened, so the caller can confirm
+    /// with the user that the copied session actually belongs to the account they just logged into.
+    public func copyDefaultDesktopSessionIfAvailable(into profile: Profile, home: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> Bool {
+        guard !MigrationService.hasRealDesktopSession(at: profile.desktopDirectory) else { return false }
+        let defaultDesktopData = home.appendingPathComponent("Library/Application Support/Claude")
+        guard MigrationService.hasRealDesktopSession(at: defaultDesktopData) else { return false }
+        try MigrationService.copyDesktopSessionContents(from: defaultDesktopData, to: profile.desktopDirectory)
+        return true
+    }
+
     public func execute(_ plan: MigrationPlan, desktopTarget: URL? = nil) throws -> MigrationReport {
         let fm = FileManager.default; var imported: [URL] = []
         for source in plan.sources {
