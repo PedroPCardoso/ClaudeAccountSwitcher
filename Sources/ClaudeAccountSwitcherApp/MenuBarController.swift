@@ -94,9 +94,23 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 let status = try self.auth.status(profileDirectory: directory)
                 let profile = Profile(id: id, name: name, email: status.email, organization: status.organization, kind: status.kind, directory: directory, health: status.isAuthenticated ? .ready : .expired)
                 try self.store.save(profile)
-                DispatchQueue.main.async { self.rebuildMenu(); self.notify("Conta adicionada") }
+                DispatchQueue.main.async { self.rebuildMenu(); self.notify("Conta adicionada"); self.offerDesktopSessionCopy(for: profile) }
             } catch { DispatchQueue.main.async { self.showError(error) } }
         }
+    }
+
+    private func offerDesktopSessionCopy(for profile: Profile) {
+        guard !MigrationService.hasRealDesktopSession(at: profile.desktopDirectory) else { return }
+        guard MigrationService.hasRealDesktopSession(at: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude")) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Reaproveitar sessão do app nativo?"
+        alert.informativeText = "Encontramos uma sessão já logada no app nativo do Claude. Isso só deve ser copiado para \(profile.name) se for a mesma conta que você acabou de logar — o app nativo não consegue confirmar isso sozinho."
+        alert.addButton(withTitle: "Copiar"); alert.addButton(withTitle: "Não, logar depois")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            _ = try migration.copyDefaultDesktopSessionIfAvailable(into: profile)
+            notify("Sessão do app nativo copiada para \(profile.name)")
+        } catch { showError(error) }
     }
 
     @objc private func importProfile() {
