@@ -12,6 +12,7 @@ enum ProfileStoreTests {
     static func main() async {
         let tests: [(String, () async throws -> Void)] = [
             ("profile JSON round trip", testProfileRoundTrip),
+            ("profile derives a sibling desktop directory from its config directory", testDesktopDirectory),
             ("store persists profiles and active profile", testStorePersists),
             ("store renames a profile without changing its identity", testRenameProfile),
             ("store removes profile data", testRemoveProfile),
@@ -46,6 +47,12 @@ enum ProfileStoreTests {
         let profile = Profile(id: UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!, name: "Work", email: "work@example.com", organization: "Acme", color: "blue", icon: "briefcase", kind: .custom, directory: URL(fileURLWithPath: "/tmp/work"), createdAt: .distantPast, lastUsedAt: nil, health: .ready)
         let decoded = try JSONDecoder().decode(Profile.self, from: JSONEncoder().encode(profile))
         try check(decoded == profile, "profile did not round trip")
+    }
+
+    static func testDesktopDirectory() throws {
+        let configDir = URL(fileURLWithPath: "/tmp/Profiles/AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA/config")
+        let profile = Profile(name: "Work", directory: configDir)
+        try check(profile.desktopDirectory.path == "/tmp/Profiles/AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA/desktop", "desktop directory was not derived as a sibling of the config directory")
     }
 
     static func testStorePersists() throws {

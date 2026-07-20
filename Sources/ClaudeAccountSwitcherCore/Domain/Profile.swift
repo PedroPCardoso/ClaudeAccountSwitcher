@@ -17,6 +17,8 @@ public struct Profile: Codable, Identifiable, Equatable, Sendable {
     public var health: ProfileHealth
     public var usage: ClaudeUsageSnapshot?
 
+    public var desktopDirectory: URL { directory.deletingLastPathComponent().appendingPathComponent("desktop", isDirectory: true) }
+
     public init(id: UUID = UUID(), name: String, email: String? = nil, organization: String? = nil, color: String = "blue", icon: String = "person.crop.circle", kind: ProfileKind = .custom, directory: URL, createdAt: Date = .now, lastUsedAt: Date? = nil, health: ProfileHealth = .unknown, usage: ClaudeUsageSnapshot? = nil) {
         self.id = id; self.name = name; self.email = email; self.organization = organization; self.color = color; self.icon = icon; self.kind = kind; self.directory = directory; self.createdAt = createdAt; self.lastUsedAt = lastUsedAt; self.health = health; self.usage = usage
     }
