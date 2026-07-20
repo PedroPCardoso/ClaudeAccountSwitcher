@@ -13,6 +13,7 @@ enum ProfileStoreTests {
         let tests: [(String, () async throws -> Void)] = [
             ("profile JSON round trip", testProfileRoundTrip),
             ("store persists profiles and active profile", testStorePersists),
+            ("store renames a profile without changing its identity", testRenameProfile),
             ("managed directory permissions", testManagedDirectory)
             ,("process runner preserves environment", testProcessRunner)
             ,("shell integration is idempotent", testShellIntegration)
@@ -59,6 +60,17 @@ enum ProfileStoreTests {
         let url = try store.createManagedDirectory(id: UUID())
         let permissions = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
         try check(permissions?.intValue == 0o700, "managed directory is not user-only")
+    }
+
+    static func testRenameProfile() throws {
+        let store = try ProfileStore(root: try temporaryRoot())
+        let profile = Profile(name: "Conta antiga", email: "account@example.com", directory: URL(fileURLWithPath: "/tmp/account"))
+        try store.save(profile)
+        var renamed = profile
+        renamed.name = "Conta pessoal"
+        try store.save(renamed)
+        let stored = try store.list()
+        try check(stored.count == 1 && stored[0].id == profile.id && stored[0].name == "Conta pessoal" && stored[0].email == profile.email, "profile rename did not preserve identity")
     }
 
     static func testProcessRunner() throws {

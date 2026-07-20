@@ -49,6 +49,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
         menu.addItem(.separator()); menu.addItem(withTitle: "Adicionar conta…", action: #selector(addAccount), keyEquivalent: ""); menu.items.last?.target = self
         menu.addItem(withTitle: "Importar perfil…", action: #selector(importProfile), keyEquivalent: ""); menu.items.last?.target = self
+        menu.addItem(withTitle: "Renomear perfil…", action: #selector(renameProfile), keyEquivalent: ""); menu.items.last?.target = self
         menu.addItem(withTitle: "Migrar perfis atuais…", action: #selector(migrateExisting), keyEquivalent: ""); menu.items.last?.target = self
         menu.addItem(withTitle: "Preferências…", action: #selector(preferences), keyEquivalent: ","); menu.items.last?.target = self
         menu.addItem(withTitle: "Sair", action: #selector(quit), keyEquivalent: "q"); menu.items.last?.target = self
@@ -88,6 +89,21 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             for entry in entries { try FileManager.default.copyItem(at: entry, to: destination.appendingPathComponent(entry.lastPathComponent)) }
             try store.save(Profile(id: id, name: source.lastPathComponent, kind: .custom, directory: destination, health: .unknown)); rebuildMenu(); notify("Perfil importado")
         } catch { showError(error) }
+    }
+
+    @objc private func renameProfile() {
+        let profiles = (try? store.list()) ?? []
+        guard !profiles.isEmpty else { notify("Nenhum perfil cadastrado"); return }
+        let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
+        profiles.forEach { picker.addItem(withTitle: $0.name + ($0.email.map { " — \($0)" } ?? "")) }
+        let field = NSTextField(string: profiles[0].name); field.placeholderString = "Novo nome"; field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        let accessory = NSStackView(views: [picker, field]); accessory.orientation = .vertical; accessory.spacing = 8; accessory.frame = NSRect(x: 0, y: 0, width: 260, height: 62)
+        let alert = NSAlert(); alert.messageText = "Renomear perfil"; alert.informativeText = "O nome é apenas um rótulo local; identidade, diretório e credenciais permanecem inalterados."; alert.accessoryView = accessory; alert.addButton(withTitle: "Salvar"); alert.addButton(withTitle: "Cancelar")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let index = picker.indexOfSelectedItem; let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard profiles.indices.contains(index), !name.isEmpty else { showError(NSError(domain: "Claude Account Switcher", code: 2, userInfo: [NSLocalizedDescriptionKey: "Informe um nome para o perfil."])); return }
+        var updated = profiles[index]; updated.name = name
+        do { try store.save(updated); rebuildMenu(); notify("Perfil renomeado") } catch { showError(error) }
     }
 
     @objc private func migrateExisting() {
