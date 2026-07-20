@@ -1,12 +1,16 @@
-# Claude Account Switcher 1.3.0
+# Claude Account Switcher 1.3.1
 
 <img src="docs/assets/claude-account-switcher-logo.png" alt="Claude Account Switcher logo" width="180">
 
 Native macOS menu bar app for switching between isolated Claude Code profiles. The selected profile applies to new sessions; already-open sessions remain unchanged.
 
-Current release: **1.3.0**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
+Current release: **1.3.1**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
 
-Direct download: [Claude-Account-Switcher-1.3.0.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.3.0.dmg)
+Direct download: [Claude-Account-Switcher-1.3.1.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.3.1.dmg)
+
+### What's new in 1.3.1
+
+- **Reset times are now spelled out in the menu bar dropdown**, not just in Preferences, with each window labeled so it is clear the 5-hour window and the weekly window free up at different moments. The 5-hour reset appears whenever that window has active usage.
 
 ### What's new in 1.3.0
 

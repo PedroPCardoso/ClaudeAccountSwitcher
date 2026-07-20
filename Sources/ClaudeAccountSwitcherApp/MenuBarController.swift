@@ -71,6 +71,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 menu.addItem(item)
                 let usage = NSMenuItem(title: usageSummary(for: profile), action: nil, keyEquivalent: "")
                 usage.isEnabled = false; usage.indentationLevel = 1; menu.addItem(usage)
+                if let renewal = renewalSummary(for: profile) {
+                    let renewalItem = NSMenuItem(title: renewal, action: nil, keyEquivalent: "")
+                    renewalItem.isEnabled = false; renewalItem.indentationLevel = 1; menu.addItem(renewalItem)
+                }
             }
         }
         menu.addItem(.separator())
@@ -259,22 +263,22 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             "⚠️ Troque de conta: \(profile.name) está em \(pct)% da janela de 5h (limite \(thr)%)",
             "⚠️ Switch accounts: \(profile.name) is at \(pct)% of the 5-hour window (threshold \(thr)%)")
         if let resetAt {
-            let when = fiveHourResetDescription(resetAt)
-            message += AppStrings.t(" — libera \(when)", " — frees up \(when)")
+            message += AppStrings.t(" — a janela de 5h libera \(resetDescription(resetAt))",
+                                    " — the 5-hour window frees up \(resetDescription(resetAt))")
         }
         let n = NSUserNotification(); n.title = "Claude Account Switcher"; n.informativeText = message
         n.soundName = fiveHourAlertSoundName()
         NSUserNotificationCenter.default.deliver(n)
     }
 
-    /// "às HH:MM" when the window frees up later today, otherwise "em <data> às HH:MM".
-    private func fiveHourResetDescription(_ resetAt: Date) -> String {
+    /// "às HH:MM" when the reset is later today, otherwise "em dd/MM às HH:MM".
+    private func resetDescription(_ date: Date) -> String {
         let time = DateFormatter(); time.dateStyle = .none; time.timeStyle = .short
-        if Calendar.current.isDateInToday(resetAt) {
-            return AppStrings.t("às \(time.string(from: resetAt))", "at \(time.string(from: resetAt))")
+        if Calendar.current.isDateInToday(date) {
+            return AppStrings.t("às \(time.string(from: date))", "at \(time.string(from: date))")
         }
         let full = DateFormatter(); full.dateStyle = .short; full.timeStyle = .short
-        return AppStrings.t("em \(full.string(from: resetAt))", "on \(full.string(from: resetAt))")
+        return AppStrings.t("em \(full.string(from: date))", "on \(full.string(from: date))")
     }
 
     private func fiveHourAlertSoundName() -> String? {
@@ -293,9 +297,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         guard let usage = profile.usage, !usage.quotas.isEmpty else {
             return "Uso indisponível — faça login novamente nesta conta para consultar as cotas."
         }
-        let formatter = DateFormatter(); formatter.dateStyle = .none; formatter.timeStyle = .short
         let lines = usage.quotas.map { quota in
-            let reset = quota.resetAt.map { "renova às \(formatter.string(from: $0))" } ?? "renovação indisponível"
+            let reset = quota.resetAt.map { "renova \(resetDescription($0))" } ?? "renovação indisponível"
             return "\(quota.key): \(Int(quota.usedPercent.rounded()))% usado (\(reset))"
         }
         return ([usage.plan ?? "Claude Pro/Max"] + lines + ["Fonte: Claude Code OAuth"]).joined(separator: "\n")
@@ -306,6 +309,18 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let quotas = usage.quotas.map { "\($0.key): \(Int($0.usedPercent.rounded()))%" }.joined(separator: "  •  ")
         let tokens = usage.tokens.map { "Tokens: \($0.total.formatted())" } ?? "Tokens: —"
         return "    \(quotas)  •  \(tokens)"
+    }
+
+    /// A separate visible line in the dropdown spelling out each window's reset time, so it is
+    /// clear that the 5-hour window and the weekly window free up at different moments.
+    private func renewalSummary(for profile: Profile) -> String? {
+        guard let usage = profile.usage else { return nil }
+        let parts = usage.quotas.compactMap { quota -> String? in
+            guard let resetAt = quota.resetAt else { return nil }
+            return "\(quota.key) \(resetDescription(resetAt))"
+        }
+        guard !parts.isEmpty else { return nil }
+        return "    " + AppStrings.t("Renova", "Resets") + " — " + parts.joined(separator: "  •  ")
     }
 
     private func activateFromPreferences(_ profile: Profile) {
