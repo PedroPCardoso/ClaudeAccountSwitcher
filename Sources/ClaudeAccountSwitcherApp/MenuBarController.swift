@@ -25,6 +25,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var usageWindowController: UsageWindowController?
     private var usageRefreshTimer: Timer?
     private var fiveHourAlert = FiveHourAlertTracker()
+    private var weeklyCreditsAlert = WeeklyCreditsAlertTracker()
 
     override init() {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude Account Switcher", isDirectory: true)
@@ -248,6 +249,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let activeID = try? store.active()?.id
         Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
+            var weeklyCreditsHits: [WeeklyCreditsAlertHit] = []
             for profile in profiles {
                 guard let status = try? self.auth.status(profileDirectory: profile.directory) else { continue }
                 var updated = profile
@@ -265,10 +267,53 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                         let active = updated; let snap = snapshot
                         await MainActor.run { self.checkFiveHourAlert(profile: active, snapshot: snap) }
                     }
+                    let current = updated; let snap = snapshot
+                    if let hit = await MainActor.run(body: { self.checkWeeklyCreditsAlert(profile: current, snapshot: snap) }) {
+                        weeklyCreditsHits.append(hit)
+                    }
                 }
+            }
+            if !weeklyCreditsHits.isEmpty {
+                let hits = weeklyCreditsHits
+                await MainActor.run { self.notifyWeeklyCreditsAlert(hits) }
             }
             await MainActor.run { self.rebuildMenu(); self.refreshPreferences() }
         }
+    }
+
+    private struct WeeklyCreditsAlertHit {
+        let profileName: String
+        let availablePercent: Int
+        let resetAt: Date?
+    }
+
+    /// Fires once per profile per weekly renewal, when that profile is within 24h of its
+    /// "Semanal" reset and still has at least the configured percentage of credits available.
+    /// Runs for every profile, not just the active one, so idle accounts with spare credits
+    /// are surfaced too.
+    private func checkWeeklyCreditsAlert(profile: Profile, snapshot: ClaudeUsageSnapshot) -> WeeklyCreditsAlertHit? {
+        guard let quota = snapshot.quotas.first(where: { $0.key == "Semanal" }) else { return nil }
+        let threshold = WeeklyCreditsAlertThreshold.resolve(UserDefaults.standard.double(forKey: WeeklyCreditsAlertThreshold.defaultsKey))
+        guard weeklyCreditsAlert.evaluate(profileID: profile.id, usedPercent: quota.usedPercent, resetAt: quota.resetAt, availableThreshold: threshold) else { return nil }
+        return WeeklyCreditsAlertHit(profileName: profile.name, availablePercent: Int((100 - quota.usedPercent).rounded()), resetAt: quota.resetAt)
+    }
+
+    private func notifyWeeklyCreditsAlert(_ hits: [WeeklyCreditsAlertHit]) {
+        let message: String
+        if hits.count == 1, let hit = hits.first {
+            let resetPart = hit.resetAt.map { resetDescription($0) } ?? AppStrings.t("em breve", "soon")
+            message = AppStrings.t(
+                "💳 \(hit.profileName) ainda tem \(hit.availablePercent)% dos créditos semanais — renova \(resetPart)",
+                "💳 \(hit.profileName) still has \(hit.availablePercent)% of weekly credits — renews \(resetPart)")
+        } else {
+            let list = hits.map { "\($0.profileName) (\($0.availablePercent)%)" }.joined(separator: ", ")
+            message = AppStrings.t(
+                "💳 Créditos semanais disponíveis: \(list) — aproveite antes da renovação",
+                "💳 Weekly credits available: \(list) — use them before renewal")
+        }
+        let n = NSUserNotification(); n.title = "Claude Account Switcher"; n.informativeText = message
+        n.soundName = fiveHourAlertSoundName()
+        NSUserNotificationCenter.default.deliver(n)
     }
 
     /// Fires a native alert once when the active account crosses the configured 5-hour usage
