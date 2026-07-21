@@ -18,6 +18,7 @@ struct PreferencesView: View {
 
     @AppStorage(FiveHourAlertThreshold.defaultsKey) private var fiveHourThreshold: Double = FiveHourAlertThreshold.default
     @AppStorage(FiveHourAlertSound.defaultsKey) private var fiveHourSoundRaw: String = FiveHourAlertSound.default.rawValue
+    @AppStorage(WeeklyCreditsAlertThreshold.defaultsKey) private var weeklyCreditsThreshold: Double = WeeklyCreditsAlertThreshold.default
     @AppStorage(AppPreferences.relaunchDesktopOnSwitch) private var relaunchDesktopOnSwitch: Bool = false
 
     var body: some View {
@@ -52,6 +53,12 @@ struct PreferencesView: View {
                     ForEach(FiveHourAlertSound.allCases, id: \.self) { Text(soundLabel($0)).tag($0.rawValue) }
                 }
                 .fixedSize()
+                Spacer()
+            }
+            HStack(spacing: 16) {
+                Stepper(value: $weeklyCreditsThreshold, in: 1...100, step: 5) {
+                    Text(AppStrings.t("Avisar quando restarem \(Int(weeklyCreditsThreshold))% ou mais dos créditos semanais no dia da renovação", "Alert when \(Int(weeklyCreditsThreshold))% or more of weekly credits remain on renewal day"))
+                }
                 Spacer()
             }
             Toggle(isOn: $relaunchDesktopOnSwitch) {
