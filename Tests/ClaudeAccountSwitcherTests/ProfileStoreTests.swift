@@ -39,6 +39,12 @@ enum ProfileStoreTests {
             ,("5h alert fires once per threshold crossing and rearms below it", testFiveHourAlertTracker)
             ,("5h alert threshold falls back to default when invalid", testFiveHourAlertThreshold)
             ,("5h alert sound falls back to default when unknown", testFiveHourAlertSound)
+            ,("weekly credits alert fires within 24h of reset when credits remain above threshold", testWeeklyCreditsAlertTracker)
+            ,("weekly credits alert does not fire outside the 24h window", testWeeklyCreditsAlertOutsideWindow)
+            ,("weekly credits alert does not fire below the credits threshold", testWeeklyCreditsAlertBelowThreshold)
+            ,("weekly credits alert rearms when resetAt changes", testWeeklyCreditsAlertRearmsOnRenewal)
+            ,("weekly credits alert tracks profiles independently", testWeeklyCreditsAlertPerProfile)
+            ,("weekly credits threshold falls back to default when invalid", testWeeklyCreditsAlertThreshold)
             ,("usage reset date parses fractional and plain ISO timestamps", testUsageResetDateParsing)
             ,("activation skips desktop sync when disabled", testActivationSkipsDesktopWhenDisabled)
             ,("paseo integration is not detected without a config file", testPaseoNotDetectedWithoutConfig)
@@ -69,6 +75,58 @@ enum ProfileStoreTests {
         try check(FiveHourAlertThreshold.resolve(0) == 80, "zero should fall back to default")
         try check(FiveHourAlertThreshold.resolve(150) == 80, "out-of-range should fall back to default")
         try check(FiveHourAlertThreshold.resolve(55) == 55, "valid threshold should be kept")
+    }
+
+    static func testWeeklyCreditsAlertTracker() throws {
+        var tracker = WeeklyCreditsAlertTracker()
+        let now = Date()
+        let resetIn12h = now.addingTimeInterval(12 * 3600)
+        try check(tracker.evaluate(profileID: UUID(), usedPercent: 60, resetAt: resetIn12h, availableThreshold: 30, now: now) == true, "should fire when within 24h and 40% available >= 30% threshold")
+    }
+
+    static func testWeeklyCreditsAlertOutsideWindow() throws {
+        var tracker = WeeklyCreditsAlertTracker()
+        let now = Date()
+        let resetIn48h = now.addingTimeInterval(48 * 3600)
+        try check(tracker.evaluate(profileID: UUID(), usedPercent: 60, resetAt: resetIn48h, availableThreshold: 30, now: now) == false, "should not fire more than 24h before reset")
+        let resetInPast = now.addingTimeInterval(-3600)
+        try check(tracker.evaluate(profileID: UUID(), usedPercent: 60, resetAt: resetInPast, availableThreshold: 30, now: now) == false, "should not fire once reset has already passed")
+        try check(tracker.evaluate(profileID: UUID(), usedPercent: 60, resetAt: nil, availableThreshold: 30, now: now) == false, "should not fire without a resetAt")
+    }
+
+    static func testWeeklyCreditsAlertBelowThreshold() throws {
+        var tracker = WeeklyCreditsAlertTracker()
+        let now = Date()
+        let resetIn12h = now.addingTimeInterval(12 * 3600)
+        try check(tracker.evaluate(profileID: UUID(), usedPercent: 85, resetAt: resetIn12h, availableThreshold: 30, now: now) == false, "15% available should not clear a 30% threshold")
+    }
+
+    static func testWeeklyCreditsAlertRearmsOnRenewal() throws {
+        var tracker = WeeklyCreditsAlertTracker()
+        let id = UUID()
+        let now = Date()
+        let firstReset = now.addingTimeInterval(12 * 3600)
+        try check(tracker.evaluate(profileID: id, usedPercent: 60, resetAt: firstReset, availableThreshold: 30, now: now) == true, "first crossing should fire")
+        try check(tracker.evaluate(profileID: id, usedPercent: 60, resetAt: firstReset, availableThreshold: 30, now: now) == false, "same resetAt should not fire twice")
+        let secondReset = firstReset.addingTimeInterval(7 * 24 * 3600)
+        let laterNow = secondReset.addingTimeInterval(-12 * 3600)
+        try check(tracker.evaluate(profileID: id, usedPercent: 60, resetAt: secondReset, availableThreshold: 30, now: laterNow) == true, "a new resetAt after renewal should rearm and fire again")
+    }
+
+    static func testWeeklyCreditsAlertPerProfile() throws {
+        var tracker = WeeklyCreditsAlertTracker()
+        let now = Date()
+        let reset = now.addingTimeInterval(12 * 3600)
+        let profileA = UUID(); let profileB = UUID()
+        try check(tracker.evaluate(profileID: profileA, usedPercent: 60, resetAt: reset, availableThreshold: 30, now: now) == true, "profile A should fire")
+        try check(tracker.evaluate(profileID: profileB, usedPercent: 60, resetAt: reset, availableThreshold: 30, now: now) == true, "profile B should fire independently of profile A's state")
+        try check(tracker.evaluate(profileID: profileA, usedPercent: 60, resetAt: reset, availableThreshold: 30, now: now) == false, "profile A should not fire again for the same resetAt")
+    }
+
+    static func testWeeklyCreditsAlertThreshold() throws {
+        try check(WeeklyCreditsAlertThreshold.resolve(0) == 30, "zero should fall back to default")
+        try check(WeeklyCreditsAlertThreshold.resolve(150) == 30, "out-of-range should fall back to default")
+        try check(WeeklyCreditsAlertThreshold.resolve(45) == 45, "valid threshold should be kept")
     }
 
     static func testFiveHourAlertSound() throws {

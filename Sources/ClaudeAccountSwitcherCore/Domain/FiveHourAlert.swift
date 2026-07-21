@@ -39,3 +39,34 @@ public enum FiveHourAlertSound: String, CaseIterable, Sendable {
         self = defaultsValue.flatMap(FiveHourAlertSound.init(rawValue:)) ?? .standard
     }
 }
+
+/// Tracks, per profile, which `resetAt` of the weekly window has already
+/// fired a "credits available" alert, so each renewal alerts at most once.
+public struct WeeklyCreditsAlertTracker: Sendable {
+    private var alertedResetAt: [UUID: Date] = [:]
+
+    public init() {}
+
+    @discardableResult
+    public mutating func evaluate(profileID: UUID, usedPercent: Double, resetAt: Date?, availableThreshold: Double, now: Date = .now) -> Bool {
+        guard let resetAt else { return false }
+        let hoursUntilReset = resetAt.timeIntervalSince(now) / 3600
+        guard hoursUntilReset > 0, hoursUntilReset <= 24 else {
+            alertedResetAt[profileID] = nil
+            return false
+        }
+        guard (100 - usedPercent) >= availableThreshold else { return false }
+        guard alertedResetAt[profileID] != resetAt else { return false }
+        alertedResetAt[profileID] = resetAt
+        return true
+    }
+}
+
+public enum WeeklyCreditsAlertThreshold {
+    public static let defaultsKey = "weeklyCreditsAlertThreshold"
+    public static let `default`: Double = 30
+
+    public static func resolve(_ raw: Double) -> Double {
+        (raw > 0 && raw <= 100) ? raw : `default`
+    }
+}
