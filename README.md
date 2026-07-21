@@ -1,12 +1,16 @@
-# Claude Account Switcher 1.3.1
+# Claude Account Switcher 1.3.2
 
 <img src="docs/assets/claude-account-switcher-logo.png" alt="Claude Account Switcher logo" width="180">
 
 Native macOS menu bar app for switching between isolated Claude Code profiles. The selected profile applies to new sessions; already-open sessions remain unchanged.
 
-Current release: **1.3.1**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
+Current release: **1.3.2**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
 
-Direct download: [Claude-Account-Switcher-1.3.1.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.3.1.dmg)
+Direct download: [Claude-Account-Switcher-1.3.2.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.3.2.dmg)
+
+### What's new in 1.3.2
+
+- **Weekly credits available alert.** A native notification now fires when any account (active or not) is within 24 hours of its weekly quota renewal while still having at least a configurable share of credits available (default 30%), so unused credits don't go to waste. Multiple qualifying accounts in the same check are combined into a single notification. The threshold is set in Preferences and reuses the 5-hour alert's sound setting.
 
 ### What's new in 1.3.1
 
