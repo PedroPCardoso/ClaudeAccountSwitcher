@@ -47,10 +47,27 @@ public final class ProfileStore: @unchecked Sendable {
             guard profilePath.hasPrefix(managedRoot + "/") else { throw StoreError.unmanagedProfile(profile.directory) }
             let existing = try listLocked()
             guard existing.contains(where: { $0.id == profile.id }) else { throw StoreError.missingProfile(profile.id) }
+            // Remove o diretório de credenciais PRIMEIRO. Se apagássemos o metadata antes e o
+            // removeItem falhasse, o diretório ficaria órfão no disco sem rastreio no JSON.
+            // Nesta ordem, uma falha aqui aborta a remoção com o metadata ainda íntegro.
+            if fileManager.fileExists(atPath: profile.directory.path) { try fileManager.removeItem(at: profile.directory) }
             let profiles = existing.filter { $0.id != profile.id }
             try atomicWrite(try encoder.encode(profiles), to: metadataURL)
-            if fileManager.fileExists(atPath: profile.directory.path) { try fileManager.removeItem(at: profile.directory) }
             if (try activeLocked()?.id) == profile.id, fileManager.fileExists(atPath: activeURL.path) { try fileManager.removeItem(at: activeURL) }
+        }
+    }
+
+    /// Diretórios em `Profiles/` sem um perfil correspondente no metadata — órfãos deixados
+    /// por uma remoção parcial anterior. Cada diretório gerenciado é nomeado pelo UUID do
+    /// perfil; um UUID sem entrada no metadata é um órfão que pode ser apagado com segurança.
+    public func orphanedProfileDirectories() throws -> [URL] {
+        try queue.sync {
+            let knownIDs = Set(try listLocked().map { $0.id })
+            guard let entries = try? fileManager.contentsOfDirectory(at: profilesDirectory, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return [] }
+            return entries.filter { entry in
+                guard let id = UUID(uuidString: entry.lastPathComponent) else { return false }
+                return !knownIDs.contains(id)
+            }
         }
     }
 

@@ -23,6 +23,10 @@ enum ProfileStoreTests {
             ,("process runner enforces timeout with kill", testProcessRunnerTimeout)
             ,("shell integration is idempotent", testShellIntegration)
             ,("activation rolls back on launchd failure", testActivationRollback)
+            ,("activation rollback restores the previously active profile", testActivationRollbackRestoresPreviousActive)
+            ,("activation propagates paseo symlink failure and rolls back", testActivationPropagatesSymlinkFailure)
+            ,("remove keeps metadata when directory deletion fails", testRemoveKeepsMetadataWhenDirectoryDeletionFails)
+            ,("store lists orphaned profile directories", testOrphanedProfileDirectories)
             ,("migration preserves hidden Claude files", testMigration)
             ,("legacy active state is migrated", testLegacyActiveState)
             ,("launcher selects active profile", testLauncher)
@@ -368,6 +372,61 @@ enum ProfileStoreTests {
         do { _ = try await service.activate(profile); throw TestFailure.failed("activation unexpectedly succeeded") }
         catch ActivationError.rolledBack { }
         try check(try store.active() == nil, "active profile was not rolled back")
+    }
+
+    static func testActivationRollbackRestoresPreviousActive() async throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root); let fake = FakeLaunchd()
+        let dirA = root.appendingPathComponent("a"); let dirB = root.appendingPathComponent("b")
+        try FileManager.default.createDirectory(at: dirA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dirB, withIntermediateDirectories: true)
+        let a = Profile(name: "A", directory: dirA); let b = Profile(name: "B", directory: dirB)
+        try store.save(a); try store.save(b)
+        let service = ActivationService(store: store, launchd: fake)
+        _ = try await service.activate(a, syncDesktopApp: false)
+        try check(try store.active()?.id == a.id, "precondition: A should be active")
+        // Ativar B falha no launchd → rollback deve restaurar A como ativo (não deixar nil).
+        fake.shouldFail = true
+        do { _ = try await service.activate(b, syncDesktopApp: false); throw TestFailure.failed("activation unexpectedly succeeded") }
+        catch ActivationError.rolledBack { }
+        try check(try store.active()?.id == a.id, "rollback did not restore the previously active profile")
+    }
+
+    static func testActivationPropagatesSymlinkFailure() async throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root)
+        let dir = root.appendingPathComponent("config"); try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let profile = Profile(name: "P", directory: dir); try store.save(profile)
+        // appSupport do Paseo sob um caminho não-criável (um arquivo no lugar de um diretório pai)
+        // → updateSymlink lança. Antes, o `try?` engolia esse erro e a ativação seguia.
+        let blocker = root.appendingPathComponent("blocker"); try "x".write(to: blocker, atomically: true, encoding: .utf8)
+        let paseo = PaseoIntegration(appSupport: blocker.appendingPathComponent("sub"), paseoHome: root.appendingPathComponent(".paseo"))
+        let service = ActivationService(store: store, launchd: FakeLaunchd(), paseoIntegration: paseo)
+        do { _ = try await service.activate(profile, syncDesktopApp: false); throw TestFailure.failed("activation should have failed on symlink error") }
+        catch ActivationError.rolledBack { }
+        try check(try store.active() == nil, "activation did not roll back after the symlink failure was propagated")
+    }
+
+    static func testRemoveKeepsMetadataWhenDirectoryDeletionFails() throws {
+        let store = try ProfileStore(root: try temporaryRoot())
+        let id = UUID(); let dir = try store.createManagedDirectory(id: id)
+        let profile = Profile(id: id, name: "X", directory: dir); try store.save(profile)
+        // Torna o pai (Profiles/<id>) somente-leitura → apagar o config falha por permissão.
+        let parent = dir.deletingLastPathComponent()
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: parent.path)
+        var threw = false
+        do { try store.remove(profile) } catch { threw = true }
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
+        try check(threw, "remove should fail when the credentials directory cannot be deleted")
+        try check(try store.list().contains(where: { $0.id == id }), "metadata must survive a failed directory deletion (no orphan)")
+        try check(FileManager.default.fileExists(atPath: dir.path), "credentials directory should remain instead of being silently orphaned")
+    }
+
+    static func testOrphanedProfileDirectories() throws {
+        let store = try ProfileStore(root: try temporaryRoot())
+        let known = UUID(); let knownDir = try store.createManagedDirectory(id: known)
+        try store.save(Profile(id: known, name: "Known", directory: knownDir))
+        let orphan = UUID(); _ = try store.createManagedDirectory(id: orphan)   // diretório sem metadata
+        let found = try store.orphanedProfileDirectories()
+        try check(found.count == 1 && found[0].lastPathComponent == orphan.uuidString, "orphan scan did not find exactly the unbacked directory")
     }
 
     static func testMigration() throws {
