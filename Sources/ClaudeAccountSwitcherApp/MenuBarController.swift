@@ -323,7 +323,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     /// Runs for every profile, not just the active one, so idle accounts with spare credits
     /// are surfaced too.
     private func checkWeeklyCreditsAlert(profile: Profile, snapshot: ClaudeUsageSnapshot) -> WeeklyCreditsAlertHit? {
-        guard let quota = snapshot.quotas.first(where: { $0.key == "Semanal" }) else { return nil }
+        guard let quota = snapshot.quotas.first(where: { $0.kind == .sevenDay }) else { return nil }
         let threshold = WeeklyCreditsAlertThreshold.resolve(UserDefaults.standard.double(forKey: WeeklyCreditsAlertThreshold.defaultsKey))
         guard weeklyCreditsAlert.evaluate(profileID: profile.id, usedPercent: quota.usedPercent, resetAt: quota.resetAt, availableThreshold: threshold) else { return nil }
         return WeeklyCreditsAlertHit(profileName: profile.name, availablePercent: Int((100 - quota.usedPercent).rounded()), resetAt: quota.resetAt)
@@ -350,7 +350,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     /// Fires a native alert once when the active account crosses the configured 5-hour usage
     /// threshold, telling the user when the window frees up so they know how long to wait.
     private func checkFiveHourAlert(profile: Profile, snapshot: ClaudeUsageSnapshot) {
-        guard let quota = snapshot.quotas.first(where: { $0.key == "Janela 5h" }) else { return }
+        guard let quota = snapshot.quotas.first(where: { $0.kind == .fiveHour }) else { return }
         let threshold = FiveHourAlertThreshold.resolve(UserDefaults.standard.double(forKey: FiveHourAlertThreshold.defaultsKey))
         guard fiveHourAlert.evaluate(usedPercent: quota.usedPercent, threshold: threshold) else { return }
         notifyFiveHourAlert(profile: profile, percent: quota.usedPercent, threshold: threshold, resetAt: quota.resetAt)
@@ -371,14 +371,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     /// "às HH:MM" when the reset is later today, otherwise "em dd/MM às HH:MM".
-    private func resetDescription(_ date: Date) -> String {
-        let time = DateFormatter(); time.dateStyle = .none; time.timeStyle = .short
-        if Calendar.current.isDateInToday(date) {
-            return AppStrings.t("às \(time.string(from: date))", "at \(time.string(from: date))")
-        }
-        let full = DateFormatter(); full.dateStyle = .short; full.timeStyle = .short
-        return AppStrings.t("em \(full.string(from: date))", "on \(full.string(from: date))")
-    }
+    private func resetDescription(_ date: Date) -> String { QuotaFormatter.resetDescription(date) }
 
     private func fiveHourAlertSoundName() -> String? {
         switch FiveHourAlertSound(defaultsValue: UserDefaults.standard.string(forKey: FiveHourAlertSound.defaultsKey)) {

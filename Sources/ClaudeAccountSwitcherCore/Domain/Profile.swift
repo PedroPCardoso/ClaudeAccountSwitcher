@@ -1,7 +1,7 @@
 import Foundation
 
 public enum ProfileKind: String, Codable, Sendable { case claudeSubscription, anthropicConsole, custom }
-public enum ProfileHealth: String, Codable, Sendable { case unknown, ready, expired, unavailable }
+public enum ProfileHealth: String, Codable, Sendable { case unknown, ready, expired }
 
 public struct Profile: Codable, Identifiable, Equatable, Sendable {
     public let id: UUID

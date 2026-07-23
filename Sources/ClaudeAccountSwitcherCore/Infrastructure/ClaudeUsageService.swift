@@ -1,13 +1,37 @@
 import Foundation
 import CryptoKit
 
+/// Identidade estável de uma cota, independente do rótulo localizado. Os alertas casam por
+/// `kind`; traduzir/alterar o `key` (que é só apresentação) não pode mais quebrá-los.
+public enum QuotaKind: String, Codable, Equatable, Sendable { case fiveHour, sevenDay, sevenDayModel }
+
 public struct ClaudeQuota: Codable, Equatable, Sendable {
+    public let kind: QuotaKind
     public let key: String
     public let usedPercent: Double
     public let resetAt: Date?
 
-    public init(key: String, usedPercent: Double, resetAt: Date? = nil) {
-        self.key = key; self.usedPercent = usedPercent; self.resetAt = resetAt
+    public init(kind: QuotaKind, key: String, usedPercent: Double, resetAt: Date? = nil) {
+        self.kind = kind; self.key = key; self.usedPercent = usedPercent; self.resetAt = resetAt
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, key, usedPercent, resetAt }
+
+    // Decodificação compatível com snapshots persistidos antes do campo `kind` existir:
+    // infere o tipo a partir do rótulo legado em vez de falhar (o que derrubaria todo o
+    // profiles.json e faria os perfis sumirem).
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.key = try container.decode(String.self, forKey: .key)
+        self.usedPercent = try container.decode(Double.self, forKey: .usedPercent)
+        self.resetAt = try container.decodeIfPresent(Date.self, forKey: .resetAt)
+        self.kind = try container.decodeIfPresent(QuotaKind.self, forKey: .kind) ?? Self.inferKind(fromLegacyKey: key)
+    }
+
+    private static func inferKind(fromLegacyKey key: String) -> QuotaKind {
+        if key == "Semanal" || key == "Weekly" { return .sevenDay }
+        if key.hasPrefix("Semanal ") || key.hasPrefix("Weekly ") { return .sevenDayModel }
+        return .fiveHour
     }
 }
 
@@ -118,15 +142,15 @@ public struct ClaudeUsageService: Sendable {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw ClaudeUsageError.invalidResponse }
         var quotas: [ClaudeQuota] = []
         if let five = root["five_hour"] as? [String: Any], let value = five["utilization"] as? NSNumber {
-            quotas.append(ClaudeQuota(key: "Janela 5h", usedPercent: value.doubleValue, resetAt: Self.parseResetDate(five["resets_at"] as? String)))
+            quotas.append(ClaudeQuota(kind: .fiveHour, key: "Janela 5h", usedPercent: value.doubleValue, resetAt: Self.parseResetDate(five["resets_at"] as? String)))
         }
         if let seven = root["seven_day"] as? [String: Any], let value = seven["utilization"] as? NSNumber {
-            quotas.append(ClaudeQuota(key: "Semanal", usedPercent: value.doubleValue, resetAt: Self.parseResetDate(seven["resets_at"] as? String)))
+            quotas.append(ClaudeQuota(kind: .sevenDay, key: "Semanal", usedPercent: value.doubleValue, resetAt: Self.parseResetDate(seven["resets_at"] as? String)))
         }
         for (key, raw) in root where key.hasPrefix("seven_day_") {
             guard let window = raw as? [String: Any], let value = window["utilization"] as? NSNumber else { continue }
             let model = key.replacingOccurrences(of: "seven_day_", with: "").capitalized
-            quotas.append(ClaudeQuota(key: "Semanal \(model)", usedPercent: value.doubleValue, resetAt: Self.parseResetDate(window["resets_at"] as? String)))
+            quotas.append(ClaudeQuota(kind: .sevenDayModel, key: "Semanal \(model)", usedPercent: value.doubleValue, resetAt: Self.parseResetDate(window["resets_at"] as? String)))
         }
         guard !quotas.isEmpty else { throw ClaudeUsageError.invalidResponse }
         return ClaudeUsageSnapshot(plan: root["plan"] as? String ?? "Claude Pro/Max", quotas: quotas, source: "Anthropic OAuth (Claude Code)")
