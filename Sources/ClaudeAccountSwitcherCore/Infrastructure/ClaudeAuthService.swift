@@ -16,7 +16,7 @@ public struct ClaudeAuthService: Sendable {
     public init(locator: ClaudeLocator, runner: ProcessRunner = .init()) { self.locator = locator; self.runner = runner }
 
     public func status(profileDirectory: URL) throws -> AuthStatus {
-        let result = try runner.run(executable: locator.locate(), arguments: ["auth", "status", "--json"], environment: ["CLAUDE_CONFIG_DIR": profileDirectory.path])
+        let result = try runner.run(executable: locator.locate(), arguments: ["auth", "status", "--json"], environment: ["CLAUDE_CONFIG_DIR": profileDirectory.path], timeout: 30)
         guard let data = result.stdout.data(using: .utf8), let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw ClaudeAuthError.invalidStatus }
         let authenticated = (raw["loggedIn"] as? Bool) ?? (raw["isAuthenticated"] as? Bool) ?? raw["authToken"] != nil
         let email = raw["email"] as? String
@@ -29,7 +29,9 @@ public struct ClaudeAuthService: Sendable {
     public func login(profileDirectory: URL, kind: ProfileKind, email: String? = nil) throws {
         let mode = kind == .anthropicConsole ? "--console" : "--claudeai"
         var args = ["auth", "login", mode]; if let email, !email.isEmpty { args += ["--email", email] }
-        do { _ = try runner.run(executable: locator.locate(), arguments: args, environment: ["CLAUDE_CONFIG_DIR": profileDirectory.path]) }
+        // Login abre o browser e aguarda o fluxo OAuth; timeout generoso evita pendurar
+        // a app para sempre caso o CLI trave, sem cortar uma interação legítima do usuário.
+        do { _ = try runner.run(executable: locator.locate(), arguments: args, environment: ["CLAUDE_CONFIG_DIR": profileDirectory.path], timeout: 300) }
         catch let ProcessRunnerError.failed(result) { throw ClaudeAuthError.loginFailed(result.stderr) }
     }
 }
