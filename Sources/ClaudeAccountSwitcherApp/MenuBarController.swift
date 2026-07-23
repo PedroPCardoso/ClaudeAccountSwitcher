@@ -24,6 +24,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var preferencesWindowController: PreferencesWindowController?
     private var usageWindowController: UsageWindowController?
     private var usageRefreshTimer: Timer?
+    private var isRefreshingUsage = false
     private var fiveHourAlert = FiveHourAlertTracker()
     private var weeklyCreditsAlert = WeeklyCreditsAlertTracker()
 
@@ -197,8 +198,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     @objc private func openUsage() {
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
-        if usageWindowController == nil { usageWindowController = UsageWindowController(profiles: profiles, activeID: activeID) }
-        else { usageWindowController?.update(profiles: profiles, activeID: activeID) }
+        if usageWindowController == nil {
+            usageWindowController = UsageWindowController(profiles: profiles, activeID: activeID, isRefreshing: isRefreshingUsage, onRefresh: { [weak self] in self?.refreshProfileMetadata() })
+        } else {
+            usageWindowController?.update(profiles: profiles, activeID: activeID, isRefreshing: isRefreshingUsage)
+        }
         usageWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         refreshProfileMetadata()
@@ -265,10 +269,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
         preferencesWindowController?.update(profiles: profiles, activeID: activeID, paseoDetected: paseo.isDetected(), paseoConfigured: paseo.isConfigured())
-        usageWindowController?.update(profiles: profiles, activeID: activeID)
+        usageWindowController?.update(profiles: profiles, activeID: activeID, isRefreshing: isRefreshingUsage)
     }
 
     private func refreshProfileMetadata() {
+        guard !isRefreshingUsage else { return }   // evita ciclos concorrentes (timer + refresh manual)
+        isRefreshingUsage = true
+        refreshPreferences()                        // reflete o estado de "carregando" imediatamente
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
         Task.detached(priority: .utility) { [weak self] in
@@ -301,7 +308,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 let hits = weeklyCreditsHits
                 await MainActor.run { self.notifyWeeklyCreditsAlert(hits) }
             }
-            await MainActor.run { self.rebuildMenu(); self.refreshPreferences() }
+            await MainActor.run { self.isRefreshingUsage = false; self.rebuildMenu(); self.refreshPreferences() }
         }
     }
 

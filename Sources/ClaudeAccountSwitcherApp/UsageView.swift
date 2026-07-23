@@ -4,12 +4,28 @@ import ClaudeAccountSwitcherCore
 struct UsageView: View {
     let profiles: [Profile]
     let activeID: UUID?
+    var isRefreshing: Bool = false
+    var onRefresh: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(AppStrings.t("Uso do Claude", "Claude Usage")).font(.title2.weight(.semibold))
-            Text(AppStrings.t("Cotas reais das contas Pro/Max autenticadas no Claude Code.", "Live quotas for authenticated Claude Pro/Max accounts."))
-                .font(.subheadline).foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(AppStrings.t("Uso do Claude", "Claude Usage")).font(.title2.weight(.semibold))
+                    Text(AppStrings.t("Cotas reais das contas Pro/Max autenticadas no Claude Code.", "Live quotas for authenticated Claude Pro/Max accounts."))
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+                HStack(spacing: 8) {
+                    if isRefreshing { ProgressView().controlSize(.small) }
+                    Button(action: onRefresh) {
+                        Label(AppStrings.t("Atualizar", "Refresh"), systemImage: "arrow.clockwise")
+                    }
+                    .disabled(isRefreshing)
+                    .keyboardShortcut("r", modifiers: .command)
+                    .help(AppStrings.t("Atualizar cotas agora", "Refresh quotas now"))
+                }
+            }
 
             if profiles.isEmpty {
                 VStack(spacing: 8) {
@@ -29,7 +45,7 @@ struct UsageView: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(20)
-        .frame(width: 720, height: 500)
+        .frame(minWidth: 480, idealWidth: 720, maxWidth: .infinity, minHeight: 380, idealHeight: 500, maxHeight: .infinity)
     }
 
     @ViewBuilder
