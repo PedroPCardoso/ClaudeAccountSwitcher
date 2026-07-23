@@ -26,6 +26,9 @@ enum ProfileStoreTests {
             ,("migration preserves hidden Claude files", testMigration)
             ,("legacy active state is migrated", testLegacyActiveState)
             ,("launcher selects active profile", testLauncher)
+            ,("launcher escapes single quotes in paths", testLauncherEscapesQuoteInPath)
+            ,("cleanup backs up .zshrc before rewriting", testCleanupAliasesBacksUpZshrc)
+            ,("locator sorts claude versions semantically", testClaudeLocatorSortsVersionsSemantically)
             ,("system desktop app client resolves the bundle identifier constant", testSystemDesktopAppClientBundleIdentifier)
             ,("desktop activator skips when the app is not installed", testDesktopActivatorSkipsWhenAppMissing)
             ,("desktop activator terminates the running app then launches with the profile directory", testDesktopActivatorTerminatesAndLaunches)
@@ -438,6 +441,55 @@ enum ProfileStoreTests {
             let script = String(data: try Data(contentsOf: shell.launcherURL()), encoding: .utf8) ?? "script unavailable"
             throw TestFailure.failed("launcher failed: \(error); script=\(script)")
         }
+    }
+
+    static func testLauncherEscapesQuoteInPath() throws {
+        // Caminho com apóstrofo no diretório de app support (→ path do STATE no launcher).
+        // Sem escaping de aspas simples, o `set -eu` do launcher quebraria a execução.
+        let root = try temporaryRoot(); let app = root.appendingPathComponent("o'brien support").appendingPathComponent("app-support")
+        let store = try ProfileStore(root: app)
+        let profileDir = root.appendingPathComponent("profile")
+        try FileManager.default.createDirectory(at: profileDir, withIntermediateDirectories: true)
+        let profile = Profile(name: "P", directory: profileDir); try store.save(profile)
+        try store.setActive(ActiveProfile(id: profile.id, directory: profile.directory))
+        let shell = ShellIntegrationManager(appSupport: app); let home = root.appendingPathComponent("home")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try shell.install(home: home, officialBinary: URL(fileURLWithPath: "/usr/bin/env"))
+        do {
+            let result = try ProcessRunner().run(executable: shell.launcherURL())
+            try check(result.stdout.contains("CLAUDE_CONFIG_DIR=\(profileDir.path)"), "launcher broke on a path containing a single quote")
+        } catch {
+            let script = String(data: (try? Data(contentsOf: shell.launcherURL())) ?? Data(), encoding: .utf8) ?? "script unavailable"
+            throw TestFailure.failed("launcher failed on quoted path: \(error); script=\(script)")
+        }
+    }
+
+    static func testCleanupAliasesBacksUpZshrc() throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root.appendingPathComponent("app-support"))
+        let home = root.appendingPathComponent("home"); try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let zshrc = home.appendingPathComponent(".zshrc")
+        try "alias keep='echo keep'\nalias claude-work='claude'\n".write(to: zshrc, atomically: true, encoding: .utf8)
+        try MigrationService(store: store).cleanupRecognizedAliases(home: home, confirmed: true)
+        let after = try String(contentsOf: zshrc, encoding: .utf8)
+        try check(after.contains("alias keep=") && !after.contains("alias claude-work="), "cleanup did not remove only the recognized alias")
+        let backups = try FileManager.default.contentsOfDirectory(atPath: store.root.appendingPathComponent("Backups").path)
+        try check(backups.contains(where: { $0.hasPrefix("zshrc-") }), "cleanup did not back up .zshrc before rewriting")
+    }
+
+    static func testClaudeLocatorSortsVersionsSemantically() throws {
+        let home = try temporaryRoot()
+        let versions = home.appendingPathComponent(".local/share/claude/versions")
+        for name in ["1.9.0", "1.10.0", "1.2.0"] {
+            let dir = versions.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let bin = dir.appendingPathComponent("claude")
+            try "#!/bin/sh\necho \(name)".data(using: .utf8)!.write(to: bin)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: bin.path)
+        }
+        let located = try ClaudeLocator(home: home).locate()
+        try check(located.deletingLastPathComponent().lastPathComponent == "1.10.0", "locator picked \(located.path) instead of the semantically newest 1.10.0")
+        try check(ClaudeLocator.isVersion("1.10.0", newerThan: "1.9.0"), "1.10.0 should be newer than 1.9.0")
+        try check(!ClaudeLocator.isVersion("1.2.0", newerThan: "1.10.0"), "1.2.0 should not be newer than 1.10.0")
     }
 
     static func testLegacyActiveState() throws {
