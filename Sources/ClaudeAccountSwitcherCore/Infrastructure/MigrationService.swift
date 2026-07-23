@@ -85,6 +85,19 @@ public struct MigrationService: Sendable {
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false).filter { line in
             !(line.contains("alias claude-work=") || line.contains("alias code-work=") || line.contains("alias zed-work="))
         }
-        try lines.joined(separator: "\n").data(using: .utf8)!.write(to: file, options: .atomic)
+        let updated = lines.joined(separator: "\n")
+        guard updated != content else { return }   // nada a remover: não reescreve nem gera backup
+        // Faz backup antes de reescrever o .zshrc do usuário, consistente com o resto do app
+        // (ShellIntegrationManager e PaseoIntegration também guardam o original em Backups/).
+        try backupZshrc(file)
+        try updated.data(using: .utf8)!.write(to: file, options: .atomic)
+    }
+
+    private func backupZshrc(_ file: URL) throws {
+        let backups = store.root.appendingPathComponent("Backups", isDirectory: true)
+        try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let destination = backups.appendingPathComponent("zshrc-\(Int(Date().timeIntervalSince1970)).bak")
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.copyItem(at: file, to: destination)
     }
 }

@@ -61,7 +61,9 @@ public struct PaseoIntegration: Sendable {
         agents["providers"] = providers
         root["agents"] = agents
 
-        let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+        // Sem `.sortedKeys`: reordenar tudo alfabeticamente produzia diffs enormes no
+        // config.json do usuário a cada integração. Só alteramos o campo do provider claude.
+        let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted])
         try data.write(to: configURL, options: .atomic)
         return backupURL
     }

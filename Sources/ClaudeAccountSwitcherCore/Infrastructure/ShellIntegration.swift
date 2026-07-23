@@ -7,13 +7,20 @@ public struct ShellIntegrationManager: Sendable {
     public init(appSupport: URL) { self.appSupport = appSupport }
 
     public func launcherURL() -> URL { appSupport.appendingPathComponent("bin/claude") }
+
+    /// Quota uma string para uso seguro dentro de aspas simples no shell POSIX. Fecha a
+    /// aspa, insere um apóstrofo escapado e reabre (`it's` → `'it'\''s'`), tratando o path
+    /// como input não-confiável — um `'` no path deixaria de quebrar o launcher.
+    static func singleQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
     public func install(home: URL, officialBinary: URL) throws {
         let bin = appSupport.appendingPathComponent("bin", isDirectory: true)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let launcher = renderLauncher(stateURL: appSupport.appendingPathComponent("active-profile.json"), officialBinary: officialBinary)
         try launcher.data(using: .utf8)!.write(to: launcherURL(), options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcherURL().path)
-        let block = "\(Self.startMarker)\nexport PATH=\"\(bin.path):$PATH\"\n\(Self.endMarker)\n"
+        let block = "\(Self.startMarker)\nexport PATH=\(Self.singleQuoted(bin.path)):\"$PATH\"\n\(Self.endMarker)\n"
         for filename in [".zprofile", ".zshrc"] {
             let shellFile = home.appendingPathComponent(filename)
             let original = (try? String(contentsOf: shellFile, encoding: .utf8)) ?? ""
@@ -41,8 +48,8 @@ public struct ShellIntegrationManager: Sendable {
         """
 #!/bin/sh
 set -eu
-STATE='\(stateURL.path)'
-OFFICIAL='\(officialBinary.path)'
+STATE=\(Self.singleQuoted(stateURL.path))
+OFFICIAL=\(Self.singleQuoted(officialBinary.path))
 if [ ! -f "$STATE" ]; then echo 'Claude Account Switcher: perfil ativo não encontrado' >&2; exit 78; fi
 CONFIG_DIR=$(/usr/bin/plutil -extract directory raw -o - "$STATE" 2>/dev/null || true)
 case "$CONFIG_DIR" in file://*) CONFIG_DIR="${CONFIG_DIR#file://}";; esac
