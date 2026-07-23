@@ -29,7 +29,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     override init() {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude Account Switcher", isDirectory: true)
-        store = try! ProfileStore(root: root)
+        do {
+            store = try ProfileStore(root: root)
+        } catch {
+            // Sem o store não há como operar; em vez de crashar sem diagnóstico
+            // (disco cheio, permissão, sandbox), mostra um alerta nativo e sai.
+            MenuBarController.presentStartupFailure(root: root, error: error)
+        }
         let locator = ClaudeLocator()
         self.locator = locator
         auth = ClaudeAuthService(locator: locator)
@@ -38,6 +44,24 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         paseo = PaseoIntegration(appSupport: root)
         activation = ActivationService(store: store, paseoIntegration: paseo)
         super.init()
+    }
+
+    /// Apresenta um alerta nativo com diagnóstico quando o armazenamento de perfis não
+    /// pode ser inicializado e encerra a app de forma controlada (nunca retorna).
+    private static func presentStartupFailure(root: URL, error: Error) -> Never {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = AppStrings.t(
+            "Não foi possível iniciar o Claude Account Switcher",
+            "Could not start Claude Account Switcher")
+        alert.informativeText = AppStrings.t(
+            "Falha ao preparar o diretório de dados em:\n\(root.path)\n\nVerifique espaço em disco e permissões e tente novamente.\n\nDetalhe: \(error.localizedDescription)",
+            "Failed to prepare the data directory at:\n\(root.path)\n\nCheck available disk space and permissions, then try again.\n\nDetail: \(error.localizedDescription)")
+        alert.addButton(withTitle: AppStrings.t("Sair", "Quit"))
+        alert.runModal()
+        exit(1)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
