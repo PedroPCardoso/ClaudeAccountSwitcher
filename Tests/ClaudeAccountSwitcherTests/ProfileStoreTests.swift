@@ -19,6 +19,8 @@ enum ProfileStoreTests {
             ("store serializes concurrent saves without losing profiles", testConcurrentSaves),
             ("managed directory permissions", testManagedDirectory)
             ,("process runner preserves environment", testProcessRunner)
+            ,("process runner drains large output without deadlock", testProcessRunnerLargeOutput)
+            ,("process runner enforces timeout with kill", testProcessRunnerTimeout)
             ,("shell integration is idempotent", testShellIntegration)
             ,("activation rolls back on launchd failure", testActivationRollback)
             ,("migration preserves hidden Claude files", testMigration)
@@ -308,6 +310,31 @@ enum ProfileStoreTests {
         defer { try? FileManager.default.removeItem(at: script) }
         let result = try ProcessRunner().run(executable: script, environment: ["CLAUDE_CONFIG_DIR": "/tmp/profile"])
         try check(result.stdout == "/tmp/profile", "runner did not pass environment")
+    }
+
+    static func testProcessRunnerLargeOutput() throws {
+        // Filho que despeja >64KB em stderr deve terminar sem deadlock de pipe.
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("claude-test-\(UUID().uuidString).sh")
+        try "#!/bin/sh\nyes x | head -c 200000 1>&2\nprintf 'ok'".data(using: .utf8)!.write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        defer { try? FileManager.default.removeItem(at: script) }
+        let result = try ProcessRunner(outputLimit: 64 * 1024, timeout: 15).run(executable: script)
+        try check(result.stdout == "ok", "runner lost stdout while stderr filled the pipe buffer")
+        try check(result.stderr.utf8.count <= 64 * 1024, "runner did not honor outputLimit")
+    }
+
+    static func testProcessRunnerTimeout() throws {
+        // Processo que dorme além do timeout deve ser morto e lançar timedOut.
+        let script = FileManager.default.temporaryDirectory.appendingPathComponent("claude-test-\(UUID().uuidString).sh")
+        try "#!/bin/sh\nsleep 30".data(using: .utf8)!.write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        defer { try? FileManager.default.removeItem(at: script) }
+        do {
+            _ = try ProcessRunner(timeout: 1).run(executable: script)
+            try check(false, "runner did not time out")
+        } catch ProcessRunnerError.timedOut {
+            // esperado
+        }
     }
 
     static func testShellIntegration() throws {
