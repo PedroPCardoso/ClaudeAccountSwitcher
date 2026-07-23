@@ -16,6 +16,7 @@ enum ProfileStoreTests {
             ("store persists profiles and active profile", testStorePersists),
             ("store renames a profile without changing its identity", testRenameProfile),
             ("store removes profile data", testRemoveProfile),
+            ("store serializes concurrent saves without losing profiles", testConcurrentSaves),
             ("managed directory permissions", testManagedDirectory)
             ,("process runner preserves environment", testProcessRunner)
             ,("shell integration is idempotent", testShellIntegration)
@@ -265,6 +266,39 @@ enum ProfileStoreTests {
         try store.remove(profile)
         try check(try store.list().isEmpty, "removed profile remains in metadata")
         try check(!FileManager.default.fileExists(atPath: profile.directory.path), "removed profile directory still exists")
+    }
+
+    static func testConcurrentSaves() async throws {
+        let store = try ProfileStore(root: try temporaryRoot())
+        let profiles = (0..<50).map { Profile(name: "Concurrent \($0)", directory: URL(fileURLWithPath: "/tmp/concurrent-\($0)")) }
+
+        // Distinct profiles saved concurrently must all survive: a read-modify-write race (issue #1)
+        // drops whichever save's read predates another save's write.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for profile in profiles { group.addTask { try store.save(profile) } }
+            try await group.waitForAll()
+        }
+        let afterAdds = try store.list()
+        try check(afterAdds.count == profiles.count, "concurrent saves lost profiles: expected \(profiles.count), got \(afterAdds.count)")
+        for profile in profiles {
+            try check(afterAdds.contains(where: { $0.id == profile.id }), "profile \(profile.id) missing after concurrent saves")
+        }
+
+        // Racing updates to the *same* profile alongside unrelated concurrent saves must not corrupt
+        // the metadata file or change the total profile count, even though the final value of the
+        // contended field is inherently a race (last write wins is acceptable; losing the row is not).
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for profile in profiles {
+                group.addTask { var renamed = profile; renamed.name = "\(profile.name) renamed"; try store.save(renamed) }
+                group.addTask { var reordered = profile; reordered.health = .expired; try store.save(reordered) }
+            }
+            try await group.waitForAll()
+        }
+        let afterUpdates = try store.list()
+        try check(afterUpdates.count == profiles.count, "concurrent updates changed profile count: expected \(profiles.count), got \(afterUpdates.count)")
+        for profile in profiles {
+            try check(afterUpdates.contains(where: { $0.id == profile.id }), "profile \(profile.id) missing after concurrent updates")
+        }
     }
 
     static func testProcessRunner() throws {
