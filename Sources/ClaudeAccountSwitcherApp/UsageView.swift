@@ -46,7 +46,8 @@ struct UsageView: View {
                 }
                 Spacer()
                 if let fetchedAt = profile.usage?.fetchedAt {
-                    Text("Atualizado \(fetchedAt, style: .time)").font(.caption2).foregroundStyle(.secondary)
+                    let time = fetchedAt.formatted(date: .omitted, time: .shortened)
+                    Text(AppStrings.t("Atualizado \(time)", "Updated \(time)")).font(.caption2).foregroundStyle(.secondary)
                 }
             }
 
@@ -54,15 +55,15 @@ struct UsageView: View {
                 ForEach(usage.quotas, id: \.key) { quota in quotaRow(quota) }
                 if let tokens = usage.tokens {
                     HStack(spacing: 12) {
-                        Label("\(tokens.total.formatted()) tokens (inclui cache)", systemImage: "number")
-                        Text("Entrada \(tokens.input.formatted())")
-                        Text("Saída \(tokens.output.formatted())")
-                        Text("\(tokens.messageCount) respostas")
+                        Label(AppStrings.t("\(tokens.total.formatted()) tokens (inclui cache)", "\(tokens.total.formatted()) tokens (incl. cache)"), systemImage: "number")
+                        Text(AppStrings.t("Entrada \(tokens.input.formatted())", "Input \(tokens.input.formatted())"))
+                        Text(AppStrings.t("Saída \(tokens.output.formatted())", "Output \(tokens.output.formatted())"))
+                        Text(AppStrings.t("\(tokens.messageCount) respostas", "\(tokens.messageCount) responses"))
                     }
                     .font(.caption).foregroundStyle(.secondary)
                 }
             } else {
-                Label("Uso indisponível — refaça o login desta conta.", systemImage: "exclamationmark.triangle")
+                Label(AppStrings.t("Uso indisponível — refaça o login desta conta.", "Usage unavailable — sign in to this account again."), systemImage: "exclamationmark.triangle")
                     .font(.subheadline).foregroundStyle(.orange)
             }
         }
@@ -80,7 +81,9 @@ struct UsageView: View {
             ProgressView(value: min(max(quota.usedPercent / 100, 0), 1))
                 .tint(quota.usedPercent >= 90 ? .red : quota.usedPercent >= 70 ? .orange : .blue)
             if let resetAt = quota.resetAt {
-                Text("Renova \(resetAt, style: .date) às \(resetAt, style: .time)")
+                let date = resetAt.formatted(date: .abbreviated, time: .omitted)
+                let time = resetAt.formatted(date: .omitted, time: .shortened)
+                Text(AppStrings.t("Renova \(date) às \(time)", "Renews \(date) at \(time)"))
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

@@ -83,7 +83,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         let usageItem = NSMenuItem(title: AppStrings.t("Ver uso no Claude…", "View Claude usage…"), action: #selector(openUsage), keyEquivalent: "")
         usageItem.target = self
-        usageItem.toolTip = "Abre o painel visual com uso e tokens de todas as contas"
+        usageItem.toolTip = AppStrings.t("Abre o painel visual com uso e tokens de todas as contas", "Opens the visual panel with usage and tokens for every account")
         menu.addItem(usageItem)
         menu.addItem(withTitle: AppStrings.t("Preferências…", "Preferences…"), action: #selector(preferences), keyEquivalent: ","); menu.items.last?.target = self
         menu.addItem(withTitle: AppStrings.t("Sair", "Quit"), action: #selector(quit), keyEquivalent: "q"); menu.items.last?.target = self
@@ -111,7 +111,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 let status = try self.auth.status(profileDirectory: directory)
                 let profile = Profile(id: id, name: name, email: status.email, organization: status.organization, kind: status.kind, directory: directory, health: status.isAuthenticated ? .ready : .expired)
                 try self.store.save(profile)
-                DispatchQueue.main.async { self.rebuildMenu(); self.notify("Conta adicionada"); self.offerDesktopSessionCopy(for: profile) }
+                DispatchQueue.main.async { self.rebuildMenu(); self.notify(AppStrings.t("Conta adicionada", "Account added")); self.offerDesktopSessionCopy(for: profile) }
             } catch { DispatchQueue.main.async { self.showError(error) } }
         }
     }
@@ -126,7 +126,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             _ = try migration.copyDefaultDesktopSessionIfAvailable(into: profile)
-            notify("Sessão do app nativo copiada para \(profile.name)")
+            notify(AppStrings.t("Sessão do app nativo copiada para \(profile.name)", "Native app session copied to \(profile.name)"))
         } catch { showError(error) }
     }
 
@@ -137,13 +137,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             let id = UUID(); let destination = try store.createManagedDirectory(id: id)
             let entries = try FileManager.default.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
             for entry in entries { try FileManager.default.copyItem(at: entry, to: destination.appendingPathComponent(entry.lastPathComponent)) }
-            try store.save(Profile(id: id, name: source.lastPathComponent, kind: .custom, directory: destination, health: .unknown)); rebuildMenu(); notify("Perfil importado")
+            try store.save(Profile(id: id, name: source.lastPathComponent, kind: .custom, directory: destination, health: .unknown)); rebuildMenu(); notify(AppStrings.t("Perfil importado", "Profile imported"))
         } catch { showError(error) }
     }
 
     @objc private func renameProfile() {
         let profiles = (try? store.list()) ?? []
-        guard !profiles.isEmpty else { notify("Nenhum perfil cadastrado"); return }
+        guard !profiles.isEmpty else { notify(AppStrings.t("Nenhum perfil cadastrado", "No profiles registered")); return }
         let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
         profiles.forEach { picker.addItem(withTitle: $0.name + ($0.email.map { " — \($0)" } ?? "")) }
         let field = NSTextField(string: profiles[0].name); field.placeholderString = "Novo nome"; field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
@@ -167,7 +167,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
         guard !name.isEmpty else { showError(NSError(domain: "Claude Account Switcher", code: 2, userInfo: [NSLocalizedDescriptionKey: "Informe um nome para o perfil."])); return }
         var updated = profile; updated.name = name
-        do { try store.save(updated); rebuildMenu(); refreshPreferences(); notify("Perfil renomeado") } catch { showError(error) }
+        do { try store.save(updated); rebuildMenu(); refreshPreferences(); notify(AppStrings.t("Perfil renomeado", "Profile renamed")) } catch { showError(error) }
     }
 
     @objc private func openUsage() {
@@ -184,11 +184,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let home = FileManager.default.homeDirectoryForCurrentUser
         do {
             let plan = try migration.preview(home: home)
-            guard !plan.sources.isEmpty else { notify("Nenhum perfil existente encontrado"); return }
+            guard !plan.sources.isEmpty else { notify(AppStrings.t("Nenhum perfil existente encontrado", "No existing profiles found")); return }
             let alert = NSAlert(); alert.messageText = "Migrar perfis existentes?"; alert.informativeText = plan.sources.map(\.path).joined(separator: "\n") + "\n\nOs originais serão mantidos."; alert.addButton(withTitle: "Migrar"); alert.addButton(withTitle: "Cancelar")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             let report = try migration.execute(plan)
-            rebuildMenu(); notify("\(report.imported.count) perfil(is) migrado(s)")
+            rebuildMenu(); notify(AppStrings.t("\(report.imported.count) perfil(is) migrado(s)", "\(report.imported.count) profile(s) migrated"))
         } catch { showError(error) }
     }
 
@@ -401,7 +401,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private func reloginFromPreferences(_ profile: Profile) {
         let alert = NSAlert(); alert.messageText = "Refazer login"; alert.informativeText = "O navegador será aberto para autenticar novamente a conta \(profile.email ?? profile.name). O nome e o perfil ativo não serão alterados."; alert.addButton(withTitle: "Continuar"); alert.addButton(withTitle: "Cancelar")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        notify("Aguardando login de \(profile.name)…")
+        notify(AppStrings.t("Aguardando login de \(profile.name)…", "Waiting for \(profile.name) to sign in…"))
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             do {
@@ -413,7 +413,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 updated.kind = status.kind
                 updated.health = status.isAuthenticated ? .ready : .expired
                 try self.store.save(updated)
-                DispatchQueue.main.async { self.rebuildMenu(); self.refreshPreferences(); self.notify("Login atualizado: \(updated.email ?? updated.name)") }
+                DispatchQueue.main.async { self.rebuildMenu(); self.refreshPreferences(); self.notify(AppStrings.t("Login atualizado: \(updated.email ?? updated.name)", "Login updated: \(updated.email ?? updated.name)")) }
             } catch { DispatchQueue.main.async { self.showError(error) } }
         }
     }
@@ -435,7 +435,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                     _ = try await activation.activate(replacement, syncDesktopApp: relaunchDesktopOnSwitch); fiveHourAlert.reset()
                 }
                 try store.remove(profile)
-                rebuildMenu(); refreshPreferences(); notify("Perfil removido")
+                rebuildMenu(); refreshPreferences(); notify(AppStrings.t("Perfil removido", "Profile removed"))
             } catch { showError(error) }
         }
     }
@@ -459,7 +459,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 try? FileManager.default.removeItem(at: bundle)
             }
             preferencesWindowController?.close()
-            notify("Aplicativo desinstalado; seus perfis foram preservados")
+            notify(AppStrings.t("Aplicativo desinstalado; seus perfis foram preservados", "App uninstalled; your profiles were preserved"))
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
         } catch { showError(error) }
     }
