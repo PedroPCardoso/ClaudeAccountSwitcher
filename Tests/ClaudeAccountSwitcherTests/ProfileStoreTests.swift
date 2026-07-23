@@ -49,6 +49,8 @@ enum ProfileStoreTests {
             ,("weekly credits alert tracks profiles independently", testWeeklyCreditsAlertPerProfile)
             ,("weekly credits threshold falls back to default when invalid", testWeeklyCreditsAlertThreshold)
             ,("usage reset date parses fractional and plain ISO timestamps", testUsageResetDateParsing)
+            ,("quota kind decodes legacy snapshot by label", testQuotaKindDecodesLegacySnapshotByLabel)
+            ,("quota kind is stable across label change", testQuotaKindIsStableAcrossLabelChange)
             ,("activation skips desktop sync when disabled", testActivationSkipsDesktopWhenDisabled)
             ,("paseo integration is not detected without a config file", testPaseoNotDetectedWithoutConfig)
             ,("paseo symlink re-targets atomically on repeated switches", testPaseoSymlinkRetargets)
@@ -438,6 +440,28 @@ enum ProfileStoreTests {
             let script = String(data: try Data(contentsOf: shell.launcherURL()), encoding: .utf8) ?? "script unavailable"
             throw TestFailure.failed("launcher failed: \(error); script=\(script)")
         }
+    }
+
+    static func testQuotaKindDecodesLegacySnapshotByLabel() throws {
+        // Snapshot antigo (sem o campo `kind`) deve inferir o tipo pelo rótulo legado,
+        // em vez de falhar o decode — o que derrubaria todo o profiles.json.
+        let legacy = #"{"key":"Semanal","usedPercent":40}"#
+        let weekly = try JSONDecoder().decode(ClaudeQuota.self, from: Data(legacy.utf8))
+        try check(weekly.kind == .sevenDay, "legacy 'Semanal' should infer .sevenDay")
+        let legacyModel = #"{"key":"Semanal Opus","usedPercent":10}"#
+        try check(try JSONDecoder().decode(ClaudeQuota.self, from: Data(legacyModel.utf8)).kind == .sevenDayModel, "legacy 'Semanal <modelo>' should infer .sevenDayModel")
+        let legacyFive = #"{"key":"Janela 5h","usedPercent":80}"#
+        try check(try JSONDecoder().decode(ClaudeQuota.self, from: Data(legacyFive.utf8)).kind == .fiveHour, "legacy 'Janela 5h' should infer .fiveHour")
+    }
+
+    static func testQuotaKindIsStableAcrossLabelChange() throws {
+        // A seleção de cota para alertas casa por `kind`, não pelo rótulo: renomear o `key`
+        // (ex.: tradução) não pode impedir o alerta de encontrar a cota semanal/5h.
+        let translated = ClaudeQuota(kind: .sevenDay, key: "Weekly (renamed)", usedPercent: 55)
+        let roundTripped = try JSONDecoder().decode(ClaudeQuota.self, from: JSONEncoder().encode(translated))
+        try check(roundTripped.kind == .sevenDay, "kind must survive round-trip regardless of label")
+        let quotas = [ClaudeQuota(kind: .fiveHour, key: "X", usedPercent: 1), translated]
+        try check(quotas.first(where: { $0.kind == .sevenDay })?.usedPercent == 55, "kind-based lookup should find the weekly quota under any label")
     }
 
     static func testLegacyActiveState() throws {

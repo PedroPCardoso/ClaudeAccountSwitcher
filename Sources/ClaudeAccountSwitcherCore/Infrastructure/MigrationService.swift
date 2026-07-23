@@ -7,7 +7,7 @@ public struct MigrationPlan: Sendable {
     public let desktopSource: URL?
     public init(sources: [URL], aliases: [String], desktopSource: URL? = nil) { self.sources = sources; self.aliases = aliases; self.desktopSource = desktopSource }
 }
-public struct MigrationReport: Sendable { public let imported: [URL]; public let backups: [URL]; public let aliases: [String] }
+public struct MigrationReport: Sendable { public let imported: [URL]; public let aliases: [String] }
 
 public struct MigrationService: Sendable {
     public let store: ProfileStore
@@ -75,7 +75,7 @@ public struct MigrationService: Sendable {
                 }
             }
         }
-        return MigrationReport(imported: imported, backups: [], aliases: plan.aliases)
+        return MigrationReport(imported: imported, aliases: plan.aliases)
     }
 
     public func cleanupRecognizedAliases(home: URL, confirmed: Bool) throws {

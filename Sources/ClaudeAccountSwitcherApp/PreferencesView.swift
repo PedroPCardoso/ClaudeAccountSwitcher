@@ -172,7 +172,6 @@ struct PreferencesView: View {
         switch health {
         case .ready: return "Autenticada"
         case .expired: return "Login expirado"
-        case .unavailable: return "Indisponível"
         case .unknown: return "Status não verificado"
         }
     }
@@ -180,7 +179,7 @@ struct PreferencesView: View {
     private func statusColor(_ health: ProfileHealth) -> Color {
         switch health {
         case .ready: return .green
-        case .expired, .unavailable: return .orange
+        case .expired: return .orange
         case .unknown: return .secondary
         }
     }
@@ -198,9 +197,8 @@ struct PreferencesView: View {
     }
 
     private func quotaText(_ quota: ClaudeQuota) -> String {
-        let percent = "\(Int(quota.usedPercent.rounded()))%"
+        let percent = QuotaFormatter.percent(quota.usedPercent)
         guard let resetAt = quota.resetAt else { return "\(quota.key): \(percent) usado" }
-        let formatter = DateFormatter(); formatter.dateStyle = .none; formatter.timeStyle = .short
-        return "\(quota.key): \(percent) usado (renova \(formatter.string(from: resetAt)))"
+        return "\(quota.key): \(percent) usado (renova \(QuotaFormatter.resetTime(resetAt)))"
     }
 }
