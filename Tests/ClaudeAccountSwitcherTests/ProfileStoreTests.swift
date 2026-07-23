@@ -22,6 +22,7 @@ enum ProfileStoreTests {
             ,("process runner drains large output without deadlock", testProcessRunnerLargeOutput)
             ,("process runner enforces timeout with kill", testProcessRunnerTimeout)
             ,("shell integration is idempotent", testShellIntegration)
+            ,("shell integration supports bash and fish", testShellIntegrationBashAndFish)
             ,("activation rolls back on launchd failure", testActivationRollback)
             ,("migration preserves hidden Claude files", testMigration)
             ,("legacy active state is migrated", testLegacyActiveState)
@@ -354,6 +355,31 @@ enum ProfileStoreTests {
         let second = try String(contentsOf: zprofile)
         let secondRC = try String(contentsOf: zshrc)
         try check(first == second && firstRC == secondRC && second.contains("alias keep") && secondRC.contains("alias keep_rc") && second.components(separatedBy: ShellIntegrationManager.startMarker).count == 2 && secondRC.components(separatedBy: ShellIntegrationManager.startMarker).count == 2, "shell install was not idempotent")
+    }
+
+    static func testShellIntegrationBashAndFish() throws {
+        let home = try temporaryRoot(); let app = home.appendingPathComponent("support")
+        let manager = ShellIntegrationManager(appSupport: app)
+        // Usuário já usa bash e fish: os arquivos existem.
+        let bashrc = home.appendingPathComponent(".bashrc")
+        let fishConfig = home.appendingPathComponent(".config/fish/config.fish")
+        try "export KEEP=1\n".write(to: bashrc, atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: fishConfig.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "set -gx KEEP 1\n".write(to: fishConfig, atomically: true, encoding: .utf8)
+
+        try manager.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"))
+
+        let bash = try String(contentsOf: bashrc, encoding: .utf8)
+        try check(bash.contains("export PATH=") && bash.contains("export KEEP=1"), "bashrc did not get the POSIX PATH block while preserving content")
+        let fish = try String(contentsOf: fishConfig, encoding: .utf8)
+        try check(fish.contains("set -gx PATH ") && fish.contains("set -gx KEEP 1"), "config.fish did not get the fish PATH block while preserving content")
+        // Não deve criar dotfiles para shells que o usuário não usa.
+        try check(!FileManager.default.fileExists(atPath: home.appendingPathComponent(".bash_profile").path), ".bash_profile should not be created when absent")
+
+        // Idempotência: uma segunda instalação não duplica o bloco.
+        try manager.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"))
+        let fish2 = try String(contentsOf: fishConfig, encoding: .utf8)
+        try check(fish2.components(separatedBy: ShellIntegrationManager.startMarker).count == 2, "fish install was not idempotent")
     }
 
     final class FakeLaunchd: LaunchdEnvironmentClient, @unchecked Sendable {
