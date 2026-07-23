@@ -49,6 +49,9 @@ enum ProfileStoreTests {
             ,("weekly credits alert tracks profiles independently", testWeeklyCreditsAlertPerProfile)
             ,("weekly credits threshold falls back to default when invalid", testWeeklyCreditsAlertThreshold)
             ,("usage reset date parses fractional and plain ISO timestamps", testUsageResetDateParsing)
+            ,("usage fetch retries on 5xx and succeeds", testUsageRetriesOnServerError)
+            ,("usage fetch does not retry on 401", testUsageDoesNotRetryUnauthorized)
+            ,("token usage caches unmodified files", testTokenUsageCachesUnmodifiedFiles)
             ,("activation skips desktop sync when disabled", testActivationSkipsDesktopWhenDisabled)
             ,("paseo integration is not detected without a config file", testPaseoNotDetectedWithoutConfig)
             ,("paseo symlink re-targets atomically on repeated switches", testPaseoSymlinkRetargets)
@@ -438,6 +441,66 @@ enum ProfileStoreTests {
             let script = String(data: try Data(contentsOf: shell.launcherURL()), encoding: .utf8) ?? "script unavailable"
             throw TestFailure.failed("launcher failed: \(error); script=\(script)")
         }
+    }
+
+    final class CallCounter: @unchecked Sendable {
+        private let lock = NSLock(); private var value = 0
+        func increment() -> Int { lock.lock(); defer { lock.unlock() }; value += 1; return value }
+        var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    private static func httpResponse(_ status: Int) -> HTTPURLResponse {
+        HTTPURLResponse(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!, statusCode: status, httpVersion: nil, headerFields: nil)!
+    }
+
+    static func testUsageRetriesOnServerError() async throws {
+        let body = Data(#"{"five_hour":{"utilization":42}}"#.utf8)
+        let counter = CallCounter()
+        let service = ClaudeUsageService(
+            retry: UsageRetryPolicy(maxAttempts: 3, baseDelay: 0),
+            transport: { _ in
+                let attempt = counter.increment()
+                return attempt < 3 ? (Data(), httpResponse(503)) : (body, httpResponse(200))
+            },
+            tokenProvider: { _ in "fake-token" })
+        let snapshot = try await service.fetch(profileDirectory: URL(fileURLWithPath: "/tmp/p"))
+        try check(counter.count == 3, "expected 3 attempts (2 failures + 1 success), got \(counter.count)")
+        try check(snapshot.quotas.first?.usedPercent == 42, "did not parse the retried success response")
+    }
+
+    static func testUsageDoesNotRetryUnauthorized() async throws {
+        let counter = CallCounter()
+        let service = ClaudeUsageService(
+            retry: UsageRetryPolicy(maxAttempts: 5, baseDelay: 0),
+            transport: { _ in _ = counter.increment(); return (Data(), httpResponse(401)) },
+            tokenProvider: { _ in "fake-token" })
+        do {
+            _ = try await service.fetch(profileDirectory: URL(fileURLWithPath: "/tmp/p"))
+            try check(false, "expected unauthorized to throw")
+        } catch ClaudeUsageError.unauthorized {
+            try check(counter.count == 1, "401 must not be retried, got \(counter.count) attempts")
+        }
+    }
+
+    static func testTokenUsageCachesUnmodifiedFiles() throws {
+        let profile = try temporaryRoot()
+        let projects = profile.appendingPathComponent("projects/proj"); try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+        let jsonl = projects.appendingPathComponent("session.jsonl")
+        let line = #"{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50}}}"#
+        try line.data(using: .utf8)!.write(to: jsonl)
+        let service = ClaudeUsageService()
+        let first = service.tokenUsage(profileDirectory: profile)
+        try check(first.input == 100 && first.output == 50, "did not parse tokens on first read")
+
+        // Sobrescreve o conteúdo com lixo do MESMO tamanho e restaura o mtime original.
+        // Se o cache por (mtime, tamanho) funcionar, o total permanece o mesmo; se relesse,
+        // o conteúdo inválido zeraria a contagem.
+        let originalMtime = (try FileManager.default.attributesOfItem(atPath: jsonl.path))[.modificationDate] as! Date
+        let garbage = String(repeating: "x", count: line.utf8.count)
+        try garbage.data(using: .utf8)!.write(to: jsonl)
+        try FileManager.default.setAttributes([.modificationDate: originalMtime], ofItemAtPath: jsonl.path)
+        let cached = service.tokenUsage(profileDirectory: profile)
+        try check(cached == first, "cache did not reuse the unmodified file (mtime+size unchanged)")
     }
 
     static func testLegacyActiveState() throws {
