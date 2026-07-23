@@ -24,12 +24,19 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var preferencesWindowController: PreferencesWindowController?
     private var usageWindowController: UsageWindowController?
     private var usageRefreshTimer: Timer?
+    private var isRefreshingUsage = false
     private var fiveHourAlert = FiveHourAlertTracker()
     private var weeklyCreditsAlert = WeeklyCreditsAlertTracker()
 
     override init() {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude Account Switcher", isDirectory: true)
-        store = try! ProfileStore(root: root)
+        do {
+            store = try ProfileStore(root: root)
+        } catch {
+            // Sem o store não há como operar; em vez de crashar sem diagnóstico
+            // (disco cheio, permissão, sandbox), mostra um alerta nativo e sai.
+            MenuBarController.presentStartupFailure(root: root, error: error)
+        }
         let locator = ClaudeLocator()
         self.locator = locator
         auth = ClaudeAuthService(locator: locator)
@@ -38,6 +45,24 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         paseo = PaseoIntegration(appSupport: root)
         activation = ActivationService(store: store, paseoIntegration: paseo)
         super.init()
+    }
+
+    /// Apresenta um alerta nativo com diagnóstico quando o armazenamento de perfis não
+    /// pode ser inicializado e encerra a app de forma controlada (nunca retorna).
+    private static func presentStartupFailure(root: URL, error: Error) -> Never {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = AppStrings.t(
+            "Não foi possível iniciar o Claude Account Switcher",
+            "Could not start Claude Account Switcher")
+        alert.informativeText = AppStrings.t(
+            "Falha ao preparar o diretório de dados em:\n\(root.path)\n\nVerifique espaço em disco e permissões e tente novamente.\n\nDetalhe: \(error.localizedDescription)",
+            "Failed to prepare the data directory at:\n\(root.path)\n\nCheck available disk space and permissions, then try again.\n\nDetail: \(error.localizedDescription)")
+        alert.addButton(withTitle: AppStrings.t("Sair", "Quit"))
+        alert.runModal()
+        exit(1)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -83,7 +108,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         let usageItem = NSMenuItem(title: AppStrings.t("Ver uso no Claude…", "View Claude usage…"), action: #selector(openUsage), keyEquivalent: "")
         usageItem.target = self
-        usageItem.toolTip = "Abre o painel visual com uso e tokens de todas as contas"
+        usageItem.toolTip = AppStrings.t("Abre o painel visual com uso e tokens de todas as contas", "Opens the visual panel with usage and tokens for every account")
         menu.addItem(usageItem)
         menu.addItem(withTitle: AppStrings.t("Preferências…", "Preferences…"), action: #selector(preferences), keyEquivalent: ","); menu.items.last?.target = self
         menu.addItem(withTitle: AppStrings.t("Sair", "Quit"), action: #selector(quit), keyEquivalent: "q"); menu.items.last?.target = self
@@ -111,7 +136,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 let status = try self.auth.status(profileDirectory: directory)
                 let profile = Profile(id: id, name: name, email: status.email, organization: status.organization, kind: status.kind, directory: directory, health: status.isAuthenticated ? .ready : .expired)
                 try self.store.save(profile)
-                DispatchQueue.main.async { self.rebuildMenu(); self.notify("Conta adicionada"); self.offerDesktopSessionCopy(for: profile) }
+                DispatchQueue.main.async { self.rebuildMenu(); self.notify(AppStrings.t("Conta adicionada", "Account added")); self.offerDesktopSessionCopy(for: profile) }
             } catch { DispatchQueue.main.async { self.showError(error) } }
         }
     }
@@ -126,7 +151,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             _ = try migration.copyDefaultDesktopSessionIfAvailable(into: profile)
-            notify("Sessão do app nativo copiada para \(profile.name)")
+            notify(AppStrings.t("Sessão do app nativo copiada para \(profile.name)", "Native app session copied to \(profile.name)"))
         } catch { showError(error) }
     }
 
@@ -137,13 +162,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             let id = UUID(); let destination = try store.createManagedDirectory(id: id)
             let entries = try FileManager.default.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
             for entry in entries { try FileManager.default.copyItem(at: entry, to: destination.appendingPathComponent(entry.lastPathComponent)) }
-            try store.save(Profile(id: id, name: source.lastPathComponent, kind: .custom, directory: destination, health: .unknown)); rebuildMenu(); notify("Perfil importado")
+            try store.save(Profile(id: id, name: source.lastPathComponent, kind: .custom, directory: destination, health: .unknown)); rebuildMenu(); notify(AppStrings.t("Perfil importado", "Profile imported"))
         } catch { showError(error) }
     }
 
     @objc private func renameProfile() {
         let profiles = (try? store.list()) ?? []
-        guard !profiles.isEmpty else { notify("Nenhum perfil cadastrado"); return }
+        guard !profiles.isEmpty else { notify(AppStrings.t("Nenhum perfil cadastrado", "No profiles registered")); return }
         let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
         profiles.forEach { picker.addItem(withTitle: $0.name + ($0.email.map { " — \($0)" } ?? "")) }
         let field = NSTextField(string: profiles[0].name); field.placeholderString = "Novo nome"; field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
@@ -167,14 +192,17 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
         guard !name.isEmpty else { showError(NSError(domain: "Claude Account Switcher", code: 2, userInfo: [NSLocalizedDescriptionKey: "Informe um nome para o perfil."])); return }
         var updated = profile; updated.name = name
-        do { try store.save(updated); rebuildMenu(); refreshPreferences(); notify("Perfil renomeado") } catch { showError(error) }
+        do { try store.save(updated); rebuildMenu(); refreshPreferences(); notify(AppStrings.t("Perfil renomeado", "Profile renamed")) } catch { showError(error) }
     }
 
     @objc private func openUsage() {
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
-        if usageWindowController == nil { usageWindowController = UsageWindowController(profiles: profiles, activeID: activeID) }
-        else { usageWindowController?.update(profiles: profiles, activeID: activeID) }
+        if usageWindowController == nil {
+            usageWindowController = UsageWindowController(profiles: profiles, activeID: activeID, isRefreshing: isRefreshingUsage, onRefresh: { [weak self] in self?.refreshProfileMetadata() })
+        } else {
+            usageWindowController?.update(profiles: profiles, activeID: activeID, isRefreshing: isRefreshingUsage)
+        }
         usageWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         refreshProfileMetadata()
@@ -184,11 +212,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let home = FileManager.default.homeDirectoryForCurrentUser
         do {
             let plan = try migration.preview(home: home)
-            guard !plan.sources.isEmpty else { notify("Nenhum perfil existente encontrado"); return }
+            guard !plan.sources.isEmpty else { notify(AppStrings.t("Nenhum perfil existente encontrado", "No existing profiles found")); return }
             let alert = NSAlert(); alert.messageText = "Migrar perfis existentes?"; alert.informativeText = plan.sources.map(\.path).joined(separator: "\n") + "\n\nOs originais serão mantidos."; alert.addButton(withTitle: "Migrar"); alert.addButton(withTitle: "Cancelar")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             let report = try migration.execute(plan)
-            rebuildMenu(); notify("\(report.imported.count) perfil(is) migrado(s)")
+            rebuildMenu(); notify(AppStrings.t("\(report.imported.count) perfil(is) migrado(s)", "\(report.imported.count) profile(s) migrated"))
         } catch { showError(error) }
     }
 
@@ -241,10 +269,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
         preferencesWindowController?.update(profiles: profiles, activeID: activeID, paseoDetected: paseo.isDetected(), paseoConfigured: paseo.isConfigured())
-        usageWindowController?.update(profiles: profiles, activeID: activeID)
+        usageWindowController?.update(profiles: profiles, activeID: activeID, isRefreshing: isRefreshingUsage)
     }
 
     private func refreshProfileMetadata() {
+        guard !isRefreshingUsage else { return }   // evita ciclos concorrentes (timer + refresh manual)
+        isRefreshingUsage = true
+        refreshPreferences()                        // reflete o estado de "carregando" imediatamente
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
         Task.detached(priority: .utility) { [weak self] in
@@ -277,7 +308,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 let hits = weeklyCreditsHits
                 await MainActor.run { self.notifyWeeklyCreditsAlert(hits) }
             }
-            await MainActor.run { self.rebuildMenu(); self.refreshPreferences() }
+            await MainActor.run { self.isRefreshingUsage = false; self.rebuildMenu(); self.refreshPreferences() }
         }
     }
 
@@ -401,7 +432,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private func reloginFromPreferences(_ profile: Profile) {
         let alert = NSAlert(); alert.messageText = "Refazer login"; alert.informativeText = "O navegador será aberto para autenticar novamente a conta \(profile.email ?? profile.name). O nome e o perfil ativo não serão alterados."; alert.addButton(withTitle: "Continuar"); alert.addButton(withTitle: "Cancelar")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        notify("Aguardando login de \(profile.name)…")
+        notify(AppStrings.t("Aguardando login de \(profile.name)…", "Waiting for \(profile.name) to sign in…"))
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             do {
@@ -413,7 +444,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 updated.kind = status.kind
                 updated.health = status.isAuthenticated ? .ready : .expired
                 try self.store.save(updated)
-                DispatchQueue.main.async { self.rebuildMenu(); self.refreshPreferences(); self.notify("Login atualizado: \(updated.email ?? updated.name)") }
+                DispatchQueue.main.async { self.rebuildMenu(); self.refreshPreferences(); self.notify(AppStrings.t("Login atualizado: \(updated.email ?? updated.name)", "Login updated: \(updated.email ?? updated.name)")) }
             } catch { DispatchQueue.main.async { self.showError(error) } }
         }
     }
@@ -435,7 +466,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                     _ = try await activation.activate(replacement, syncDesktopApp: relaunchDesktopOnSwitch); fiveHourAlert.reset()
                 }
                 try store.remove(profile)
-                rebuildMenu(); refreshPreferences(); notify("Perfil removido")
+                rebuildMenu(); refreshPreferences(); notify(AppStrings.t("Perfil removido", "Profile removed"))
             } catch { showError(error) }
         }
     }
@@ -459,7 +490,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 try? FileManager.default.removeItem(at: bundle)
             }
             preferencesWindowController?.close()
-            notify("Aplicativo desinstalado; seus perfis foram preservados")
+            notify(AppStrings.t("Aplicativo desinstalado; seus perfis foram preservados", "App uninstalled; your profiles were preserved"))
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
         } catch { showError(error) }
     }

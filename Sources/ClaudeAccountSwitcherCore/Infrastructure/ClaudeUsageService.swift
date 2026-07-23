@@ -186,8 +186,7 @@ public struct ClaudeUsageService: Sendable {
         let digest = SHA256.hash(data: Data(profileDirectory.standardizedFileURL.path.utf8))
         let suffix = digest.prefix(4).map { String(format: "%02x", $0) }.joined()
         let service = "Claude Code-credentials-\(suffix)"
-        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         process.arguments = ["find-generic-password", "-s", service, "-a", NSUserName(), "-w"]
         let pipe = Pipe(); process.standardOutput = pipe; process.standardError = Pipe()
         try? process.run(); process.waitUntilExit()

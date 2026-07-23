@@ -22,10 +22,18 @@ enum ProfileStoreTests {
             ,("process runner drains large output without deadlock", testProcessRunnerLargeOutput)
             ,("process runner enforces timeout with kill", testProcessRunnerTimeout)
             ,("shell integration is idempotent", testShellIntegration)
+            ,("shell integration supports bash and fish", testShellIntegrationBashAndFish)
             ,("activation rolls back on launchd failure", testActivationRollback)
+            ,("activation rollback restores the previously active profile", testActivationRollbackRestoresPreviousActive)
+            ,("activation propagates paseo symlink failure and rolls back", testActivationPropagatesSymlinkFailure)
+            ,("remove keeps metadata when directory deletion fails", testRemoveKeepsMetadataWhenDirectoryDeletionFails)
+            ,("store lists orphaned profile directories", testOrphanedProfileDirectories)
             ,("migration preserves hidden Claude files", testMigration)
             ,("legacy active state is migrated", testLegacyActiveState)
             ,("launcher selects active profile", testLauncher)
+            ,("launcher escapes single quotes in paths", testLauncherEscapesQuoteInPath)
+            ,("cleanup backs up .zshrc before rewriting", testCleanupAliasesBacksUpZshrc)
+            ,("locator sorts claude versions semantically", testClaudeLocatorSortsVersionsSemantically)
             ,("system desktop app client resolves the bundle identifier constant", testSystemDesktopAppClientBundleIdentifier)
             ,("desktop activator skips when the app is not installed", testDesktopActivatorSkipsWhenAppMissing)
             ,("desktop activator terminates the running app then launches with the profile directory", testDesktopActivatorTerminatesAndLaunches)
@@ -356,6 +364,31 @@ enum ProfileStoreTests {
         try check(first == second && firstRC == secondRC && second.contains("alias keep") && secondRC.contains("alias keep_rc") && second.components(separatedBy: ShellIntegrationManager.startMarker).count == 2 && secondRC.components(separatedBy: ShellIntegrationManager.startMarker).count == 2, "shell install was not idempotent")
     }
 
+    static func testShellIntegrationBashAndFish() throws {
+        let home = try temporaryRoot(); let app = home.appendingPathComponent("support")
+        let manager = ShellIntegrationManager(appSupport: app)
+        // Usuário já usa bash e fish: os arquivos existem.
+        let bashrc = home.appendingPathComponent(".bashrc")
+        let fishConfig = home.appendingPathComponent(".config/fish/config.fish")
+        try "export KEEP=1\n".write(to: bashrc, atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: fishConfig.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "set -gx KEEP 1\n".write(to: fishConfig, atomically: true, encoding: .utf8)
+
+        try manager.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"))
+
+        let bash = try String(contentsOf: bashrc, encoding: .utf8)
+        try check(bash.contains("export PATH=") && bash.contains("export KEEP=1"), "bashrc did not get the POSIX PATH block while preserving content")
+        let fish = try String(contentsOf: fishConfig, encoding: .utf8)
+        try check(fish.contains("set -gx PATH ") && fish.contains("set -gx KEEP 1"), "config.fish did not get the fish PATH block while preserving content")
+        // Não deve criar dotfiles para shells que o usuário não usa.
+        try check(!FileManager.default.fileExists(atPath: home.appendingPathComponent(".bash_profile").path), ".bash_profile should not be created when absent")
+
+        // Idempotência: uma segunda instalação não duplica o bloco.
+        try manager.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"))
+        let fish2 = try String(contentsOf: fishConfig, encoding: .utf8)
+        try check(fish2.components(separatedBy: ShellIntegrationManager.startMarker).count == 2, "fish install was not idempotent")
+    }
+
     final class FakeLaunchd: LaunchdEnvironmentClient, @unchecked Sendable {
         var values: [String] = []; var shouldFail = false
         func set(_ value: String) throws { if shouldFail { throw TestFailure.failed("launchd failure") }; values.append(value) }
@@ -371,6 +404,61 @@ enum ProfileStoreTests {
         do { _ = try await service.activate(profile); throw TestFailure.failed("activation unexpectedly succeeded") }
         catch ActivationError.rolledBack { }
         try check(try store.active() == nil, "active profile was not rolled back")
+    }
+
+    static func testActivationRollbackRestoresPreviousActive() async throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root); let fake = FakeLaunchd()
+        let dirA = root.appendingPathComponent("a"); let dirB = root.appendingPathComponent("b")
+        try FileManager.default.createDirectory(at: dirA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dirB, withIntermediateDirectories: true)
+        let a = Profile(name: "A", directory: dirA); let b = Profile(name: "B", directory: dirB)
+        try store.save(a); try store.save(b)
+        let service = ActivationService(store: store, launchd: fake)
+        _ = try await service.activate(a, syncDesktopApp: false)
+        try check(try store.active()?.id == a.id, "precondition: A should be active")
+        // Ativar B falha no launchd → rollback deve restaurar A como ativo (não deixar nil).
+        fake.shouldFail = true
+        do { _ = try await service.activate(b, syncDesktopApp: false); throw TestFailure.failed("activation unexpectedly succeeded") }
+        catch ActivationError.rolledBack { }
+        try check(try store.active()?.id == a.id, "rollback did not restore the previously active profile")
+    }
+
+    static func testActivationPropagatesSymlinkFailure() async throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root)
+        let dir = root.appendingPathComponent("config"); try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let profile = Profile(name: "P", directory: dir); try store.save(profile)
+        // appSupport do Paseo sob um caminho não-criável (um arquivo no lugar de um diretório pai)
+        // → updateSymlink lança. Antes, o `try?` engolia esse erro e a ativação seguia.
+        let blocker = root.appendingPathComponent("blocker"); try "x".write(to: blocker, atomically: true, encoding: .utf8)
+        let paseo = PaseoIntegration(appSupport: blocker.appendingPathComponent("sub"), paseoHome: root.appendingPathComponent(".paseo"))
+        let service = ActivationService(store: store, launchd: FakeLaunchd(), paseoIntegration: paseo)
+        do { _ = try await service.activate(profile, syncDesktopApp: false); throw TestFailure.failed("activation should have failed on symlink error") }
+        catch ActivationError.rolledBack { }
+        try check(try store.active() == nil, "activation did not roll back after the symlink failure was propagated")
+    }
+
+    static func testRemoveKeepsMetadataWhenDirectoryDeletionFails() throws {
+        let store = try ProfileStore(root: try temporaryRoot())
+        let id = UUID(); let dir = try store.createManagedDirectory(id: id)
+        let profile = Profile(id: id, name: "X", directory: dir); try store.save(profile)
+        // Torna o pai (Profiles/<id>) somente-leitura → apagar o config falha por permissão.
+        let parent = dir.deletingLastPathComponent()
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: parent.path)
+        var threw = false
+        do { try store.remove(profile) } catch { threw = true }
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: parent.path)
+        try check(threw, "remove should fail when the credentials directory cannot be deleted")
+        try check(try store.list().contains(where: { $0.id == id }), "metadata must survive a failed directory deletion (no orphan)")
+        try check(FileManager.default.fileExists(atPath: dir.path), "credentials directory should remain instead of being silently orphaned")
+    }
+
+    static func testOrphanedProfileDirectories() throws {
+        let store = try ProfileStore(root: try temporaryRoot())
+        let known = UUID(); let knownDir = try store.createManagedDirectory(id: known)
+        try store.save(Profile(id: known, name: "Known", directory: knownDir))
+        let orphan = UUID(); _ = try store.createManagedDirectory(id: orphan)   // diretório sem metadata
+        let found = try store.orphanedProfileDirectories()
+        try check(found.count == 1 && found[0].lastPathComponent == orphan.uuidString, "orphan scan did not find exactly the unbacked directory")
     }
 
     static func testMigration() throws {
@@ -488,19 +576,71 @@ enum ProfileStoreTests {
         let jsonl = projects.appendingPathComponent("session.jsonl")
         let line = #"{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50}}}"#
         try line.data(using: .utf8)!.write(to: jsonl)
+        // Fixa o mtime a um valor determinístico antes da primeira leitura, para que a
+        // assinatura cacheada e a restaurada mais adiante sejam idênticas byte a byte.
+        let fixedMtime = Date(timeIntervalSince1970: 1_000_000)
+        try FileManager.default.setAttributes([.modificationDate: fixedMtime], ofItemAtPath: jsonl.path)
         let service = ClaudeUsageService()
         let first = service.tokenUsage(profileDirectory: profile)
         try check(first.input == 100 && first.output == 50, "did not parse tokens on first read")
 
-        // Sobrescreve o conteúdo com lixo do MESMO tamanho e restaura o mtime original.
-        // Se o cache por (mtime, tamanho) funcionar, o total permanece o mesmo; se relesse,
-        // o conteúdo inválido zeraria a contagem.
-        let originalMtime = (try FileManager.default.attributesOfItem(atPath: jsonl.path))[.modificationDate] as! Date
+        // Sobrescreve o conteúdo com lixo do MESMO tamanho e restaura o mesmo mtime fixo.
+        // Se o cache por (mtime, tamanho) funcionar, o total permanece; se relesse, o
+        // conteúdo inválido zeraria a contagem.
         let garbage = String(repeating: "x", count: line.utf8.count)
         try garbage.data(using: .utf8)!.write(to: jsonl)
-        try FileManager.default.setAttributes([.modificationDate: originalMtime], ofItemAtPath: jsonl.path)
+        try FileManager.default.setAttributes([.modificationDate: fixedMtime], ofItemAtPath: jsonl.path)
         let cached = service.tokenUsage(profileDirectory: profile)
         try check(cached == first, "cache did not reuse the unmodified file (mtime+size unchanged)")
+    }
+
+    static func testLauncherEscapesQuoteInPath() throws {
+        // Caminho com apóstrofo no diretório de app support (→ path do STATE no launcher).
+        // Sem escaping de aspas simples, o `set -eu` do launcher quebraria a execução.
+        let root = try temporaryRoot(); let app = root.appendingPathComponent("o'brien support").appendingPathComponent("app-support")
+        let store = try ProfileStore(root: app)
+        let profileDir = root.appendingPathComponent("profile")
+        try FileManager.default.createDirectory(at: profileDir, withIntermediateDirectories: true)
+        let profile = Profile(name: "P", directory: profileDir); try store.save(profile)
+        try store.setActive(ActiveProfile(id: profile.id, directory: profile.directory))
+        let shell = ShellIntegrationManager(appSupport: app); let home = root.appendingPathComponent("home")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try shell.install(home: home, officialBinary: URL(fileURLWithPath: "/usr/bin/env"))
+        do {
+            let result = try ProcessRunner().run(executable: shell.launcherURL())
+            try check(result.stdout.contains("CLAUDE_CONFIG_DIR=\(profileDir.path)"), "launcher broke on a path containing a single quote")
+        } catch {
+            let script = String(data: (try? Data(contentsOf: shell.launcherURL())) ?? Data(), encoding: .utf8) ?? "script unavailable"
+            throw TestFailure.failed("launcher failed on quoted path: \(error); script=\(script)")
+        }
+    }
+
+    static func testCleanupAliasesBacksUpZshrc() throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root.appendingPathComponent("app-support"))
+        let home = root.appendingPathComponent("home"); try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let zshrc = home.appendingPathComponent(".zshrc")
+        try "alias keep='echo keep'\nalias claude-work='claude'\n".write(to: zshrc, atomically: true, encoding: .utf8)
+        try MigrationService(store: store).cleanupRecognizedAliases(home: home, confirmed: true)
+        let after = try String(contentsOf: zshrc, encoding: .utf8)
+        try check(after.contains("alias keep=") && !after.contains("alias claude-work="), "cleanup did not remove only the recognized alias")
+        let backups = try FileManager.default.contentsOfDirectory(atPath: store.root.appendingPathComponent("Backups").path)
+        try check(backups.contains(where: { $0.hasPrefix("zshrc-") }), "cleanup did not back up .zshrc before rewriting")
+    }
+
+    static func testClaudeLocatorSortsVersionsSemantically() throws {
+        let home = try temporaryRoot()
+        let versions = home.appendingPathComponent(".local/share/claude/versions")
+        for name in ["1.9.0", "1.10.0", "1.2.0"] {
+            let dir = versions.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let bin = dir.appendingPathComponent("claude")
+            try "#!/bin/sh\necho \(name)".data(using: .utf8)!.write(to: bin)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: bin.path)
+        }
+        let located = try ClaudeLocator(home: home).locate()
+        try check(located.deletingLastPathComponent().lastPathComponent == "1.10.0", "locator picked \(located.path) instead of the semantically newest 1.10.0")
+        try check(ClaudeLocator.isVersion("1.10.0", newerThan: "1.9.0"), "1.10.0 should be newer than 1.9.0")
+        try check(!ClaudeLocator.isVersion("1.2.0", newerThan: "1.10.0"), "1.2.0 should not be newer than 1.10.0")
     }
 
     static func testLegacyActiveState() throws {
