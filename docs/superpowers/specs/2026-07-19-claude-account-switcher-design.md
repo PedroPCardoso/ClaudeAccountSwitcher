@@ -203,7 +203,7 @@ Qualquer validação sobre os perfis reais exige uma tela de confirmação final
 
 ## Entrega
 
-O repositório fica na pasta escolhida pelo usuário. A entrega inclui código-fonte, projeto Xcode, testes, scripts seguros de build/empacotamento, documentação de arquitetura, guia de instalação e um `.app` localmente assinado. A instalação em `/Applications` será oferecida somente após o usuário validar o build; não é requisito para executar testes automatizados.
+O repositório fica em `/Users/pedrocardoso/Develop/ClaudeAccountSwitcher`. A entrega inclui código-fonte, projeto Xcode, testes, scripts seguros de build/empacotamento, documentação de arquitetura, guia de instalação e um `.app` localmente assinado. A instalação em `/Applications` será oferecida somente após o usuário validar o build; não é requisito para executar testes automatizados.
 
 ## Critérios de aceite
 
