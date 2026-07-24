@@ -15,6 +15,18 @@ else
   BIN_DIR=$(swift build -c release --product ClaudeAccountSwitcher --show-bin-path)
   cp "$BIN_DIR/ClaudeAccountSwitcher" "$APP/Contents/MacOS/ClaudeAccountSwitcher"
 fi
+# Companheiro de CLI `cas`, empacotado ao lado do executável da app em Contents/MacOS/.
+ARM_CAS=""
+X86_CAS=""
+swift build -c release --triple arm64-apple-macosx13.0 --product cas >/dev/null 2>&1 && ARM_CAS=$(swift build -c release --triple arm64-apple-macosx13.0 --show-bin-path)
+swift build -c release --triple x86_64-apple-macosx13.0 --product cas >/dev/null 2>&1 && X86_CAS=$(swift build -c release --triple x86_64-apple-macosx13.0 --show-bin-path)
+if [[ -n "$ARM_CAS" && -n "$X86_CAS" && -f "$ARM_CAS/cas" && -f "$X86_CAS/cas" ]]; then
+  lipo -create "$ARM_CAS/cas" "$X86_CAS/cas" -output "$APP/Contents/MacOS/cas"
+else
+  CAS_BIN_DIR=$(swift build -c release --product cas --show-bin-path)
+  cp "$CAS_BIN_DIR/cas" "$APP/Contents/MacOS/cas"
+fi
+chmod 755 "$APP/Contents/MacOS/cas"
 cp Resources/claude-launcher "$APP/Contents/Resources/claude-launcher"
 cp Resources/claude-account-switcher-logo.png "$APP/Contents/Resources/claude-account-switcher-logo.png"
 cat > "$APP/Contents/Info.plist" <<'PLIST'

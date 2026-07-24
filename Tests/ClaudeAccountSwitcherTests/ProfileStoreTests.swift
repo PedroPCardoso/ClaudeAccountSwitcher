@@ -70,6 +70,10 @@ enum ProfileStoreTests {
             ,("activation updates the paseo symlink alongside launchd", testActivationUpdatesPaseoSymlink)
             ,("usage tier maps percent to the same thresholds as the usage view", testUsageTierForPercent)
             ,("status bar label reads the five-hour quota by stable kind", testStatusBarUsageLabel)
+            ,("cas resolves a profile by exact name, by email, not found, and ambiguous", testCASProfileResolver)
+            ,("cas parses list/current/switch and rejects unknown or missing args", testCASParser)
+            ,("cas switch activates the resolved profile and pushes its directory to launchd", testCASSwitchActivatesResolvedProfile)
+            ,("cas is installed into the managed bin and removed on cleanup", testShellIntegrationInstallsCAS)
         ]
         var failures = 0
         for (name, test) in tests {
@@ -408,6 +412,63 @@ enum ProfileStoreTests {
         try manager.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"))
         let fish2 = try String(contentsOf: fishConfig, encoding: .utf8)
         try check(fish2.components(separatedBy: ShellIntegrationManager.startMarker).count == 2, "fish install was not idempotent")
+    }
+
+    static func testCASProfileResolver() throws {
+        let personal = Profile(name: "Personal", email: "me@example.com", directory: URL(fileURLWithPath: "/tmp/a"))
+        let work = Profile(name: "Work", email: "work@example.com", directory: URL(fileURLWithPath: "/tmp/b"))
+        // Exato por nome.
+        guard case .found(let byName) = ProfileResolver.resolve([personal, work], query: "Personal") else { throw TestFailure.failed("expected an exact name match") }
+        try check(byName.id == personal.id, "name match returned the wrong profile")
+        // Exato por email.
+        guard case .found(let byEmail) = ProfileResolver.resolve([personal, work], query: "work@example.com") else { throw TestFailure.failed("expected an exact email match") }
+        try check(byEmail.id == work.id, "email match returned the wrong profile")
+        // Não encontrado.
+        guard case .notFound = ProfileResolver.resolve([personal, work], query: "nope") else { throw TestFailure.failed("expected notFound for an unknown query") }
+        // Ambíguo: dois perfis com o mesmo nome.
+        let personalTwo = Profile(name: "Personal", email: "other@example.com", directory: URL(fileURLWithPath: "/tmp/c"))
+        guard case .ambiguous(let matches) = ProfileResolver.resolve([personal, personalTwo], query: "Personal") else { throw TestFailure.failed("expected ambiguous for a duplicated name") }
+        try check(matches.count == 2, "ambiguous resolution should return every match")
+    }
+
+    static func testCASParser() throws {
+        try check(CASParser.parse(["list"]) == .list, "list was not parsed")
+        try check(CASParser.parse(["current"]) == .current, "current was not parsed")
+        try check(CASParser.parse(["switch", "work"]) == .switchProfile("work"), "switch <target> was not parsed")
+        // Ajuda explícita sai com 0; uso incorreto sai com código ≠ 0.
+        guard case .help(let helpCode) = CASParser.parse(["--help"]), helpCode == 0 else { throw TestFailure.failed("--help should exit 0") }
+        guard case .help(let noArgCode) = CASParser.parse([]), noArgCode != 0 else { throw TestFailure.failed("no arguments should map to usage with a non-zero exit") }
+        guard case .help(let unknownCode) = CASParser.parse(["bogus"]), unknownCode != 0 else { throw TestFailure.failed("an unknown command should map to usage with a non-zero exit") }
+        guard case .help(let switchCode) = CASParser.parse(["switch"]), switchCode != 0 else { throw TestFailure.failed("switch without a target should map to usage with a non-zero exit") }
+    }
+
+    static func testCASSwitchActivatesResolvedProfile() async throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root); let fake = FakeLaunchd()
+        let directory = root.appendingPathComponent("config"); try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let profile = Profile(name: "Work", email: "work@example.com", directory: directory)
+        try store.save(profile)
+        // Resolve exatamente como a CLI faz, depois ativa pelo mesmo serviço injetável.
+        guard case .found(let target) = ProfileResolver.resolve(try store.list(), query: "work@example.com") else { throw TestFailure.failed("expected an exact email match") }
+        let service = ActivationService(store: store, launchd: fake)
+        _ = try await service.activate(target, syncDesktopApp: false)
+        try check(try store.active()?.id == profile.id, "switch did not set the resolved profile as active")
+        try check(fake.values.contains(directory.path), "switch did not push the profile directory to launchd")
+    }
+
+    static func testShellIntegrationInstallsCAS() throws {
+        let home = try temporaryRoot(); let app = home.appendingPathComponent("support")
+        let manager = ShellIntegrationManager(appSupport: app)
+        let casBinary = home.appendingPathComponent("cas-binary")
+        try "#!/bin/sh\n".write(to: casBinary, atomically: true, encoding: .utf8)
+        try manager.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"), casBinary: casBinary)
+        let installed = app.appendingPathComponent("bin/cas")
+        try check(FileManager.default.fileExists(atPath: installed.path), "install did not place cas in the managed bin")
+        try check((try FileManager.default.destinationOfSymbolicLink(atPath: installed.path)) == casBinary.path, "cas symlink did not point at the provided binary")
+        // Reinstalar não deve falhar por symlink já existente (idempotência).
+        try manager.install(home: home, officialBinary: URL(fileURLWithPath: "/bin/echo"), casBinary: casBinary)
+        try check(FileManager.default.fileExists(atPath: installed.path), "reinstall dropped the cas symlink")
+        try manager.remove(home: home)
+        try check((try? FileManager.default.destinationOfSymbolicLink(atPath: installed.path)) == nil, "remove did not delete cas from the managed bin")
     }
 
     final class FakeLaunchd: LaunchdEnvironmentClient, @unchecked Sendable {
