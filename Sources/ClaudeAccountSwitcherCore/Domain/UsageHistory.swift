@@ -1,15 +1,55 @@
 import Foundation
 
-/// Tokens somados de um único dia (início do dia no fuso local), quebrados por perfil.
-/// Só contém os perfis que o caller já filtrou pela seleção — a agregação nunca decide
-/// sozinha quais contas entram.
-public struct DailyTokenUsage: Equatable, Sendable {
-    public let day: Date                 // início do dia (local)
-    public let perProfile: [UUID: Int]   // tokens por perfil no dia (só selecionados)
-    public var total: Int { perProfile.values.reduce(0, +) }
+/// Tokens de uma mensagem/agregado quebrados por tipo — porque o custo de cada tipo é MUITO
+/// diferente (ver `ModelPricing`). O Claude Code separa: `input` fresco, `output`, `cacheRead`
+/// (leitura de cache, ~0,1x do input), e escrita de cache dividida por TTL: `cacheCreation5m`
+/// (1,25x) e `cacheCreation1h` (2x). `total` é a soma bruta (volume); para dinheiro use o custo.
+public struct TokenBreakdown: Equatable, Sendable {
+    public let input: Int
+    public let output: Int
+    public let cacheRead: Int
+    public let cacheCreation5m: Int
+    public let cacheCreation1h: Int
+    public let messageCount: Int
 
+    public var total: Int { input + output + cacheRead + cacheCreation5m + cacheCreation1h }
+    public var cacheCreation: Int { cacheCreation5m + cacheCreation1h }
+
+    public init(input: Int = 0, output: Int = 0, cacheRead: Int = 0, cacheCreation5m: Int = 0, cacheCreation1h: Int = 0, messageCount: Int = 0) {
+        self.input = input; self.output = output; self.cacheRead = cacheRead
+        self.cacheCreation5m = cacheCreation5m; self.cacheCreation1h = cacheCreation1h; self.messageCount = messageCount
+    }
+
+    public static let zero = TokenBreakdown()
+    public static func + (lhs: TokenBreakdown, rhs: TokenBreakdown) -> TokenBreakdown {
+        TokenBreakdown(input: lhs.input + rhs.input, output: lhs.output + rhs.output, cacheRead: lhs.cacheRead + rhs.cacheRead,
+                       cacheCreation5m: lhs.cacheCreation5m + rhs.cacheCreation5m, cacheCreation1h: lhs.cacheCreation1h + rhs.cacheCreation1h,
+                       messageCount: lhs.messageCount + rhs.messageCount)
+    }
+    public static func += (lhs: inout TokenBreakdown, rhs: TokenBreakdown) { lhs = lhs + rhs }
+}
+
+/// Tokens somados de um único dia (início do dia no fuso local), quebrados por perfil e por tipo,
+/// mais o custo estimado em USD por perfil. Só contém os perfis que o caller já filtrou pela
+/// seleção — a agregação nunca decide sozinha quais contas entram.
+public struct DailyTokenUsage: Equatable, Sendable {
+    public let day: Date                                    // início do dia (local)
+    public let breakdownPerProfile: [UUID: TokenBreakdown]  // tokens por perfil no dia, por tipo
+    public let costPerProfile: [UUID: Double]               // custo USD estimado por perfil no dia
+
+    /// Total de tokens (volume) por perfil — compat com o gráfico empilhado e a heurística de plano.
+    public var perProfile: [UUID: Int] { breakdownPerProfile.mapValues(\.total) }
+    public var total: Int { breakdownPerProfile.values.reduce(0) { $0 + $1.total } }
+    public var totalCostUSD: Double { costPerProfile.values.reduce(0, +) }
+
+    public init(day: Date, breakdownPerProfile: [UUID: TokenBreakdown], costPerProfile: [UUID: Double] = [:]) {
+        self.day = day; self.breakdownPerProfile = breakdownPerProfile; self.costPerProfile = costPerProfile
+    }
+
+    /// Conveniência para callers/testes que só têm o total agregado por perfil (sem quebra nem
+    /// custo). O total vai como `input` — a heurística de plano só olha `total`/`perProfile`.
     public init(day: Date, perProfile: [UUID: Int]) {
-        self.day = day; self.perProfile = perProfile
+        self.init(day: day, breakdownPerProfile: perProfile.mapValues { TokenBreakdown(input: $0) })
     }
 }
 

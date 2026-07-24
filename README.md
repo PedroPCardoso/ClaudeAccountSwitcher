@@ -1,12 +1,17 @@
-# Claude Account Switcher 1.3.5
+# Claude Account Switcher 1.3.6
 
 <img src="docs/assets/claude-account-switcher-logo.png" alt="Claude Account Switcher logo" width="180">
 
 Native macOS menu bar app for switching between isolated Claude Code profiles. The selected profile applies to new sessions; already-open sessions remain unchanged.
 
-Current release: **1.3.5**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
+Current release: **1.3.6**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
 
-Direct download: [Claude-Account-Switcher-1.3.5.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.3.5.dmg)
+Direct download: [Claude-Account-Switcher-1.3.6.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.3.6.dmg)
+
+### What's new in 1.3.6
+
+- **Accurate token counting (deduplication).** Claude Code writes several streaming chunks per assistant message, all sharing the same `message.id` + `requestId` with identical usage. The token totals now count each message once (in-file and across a resumed session's files), matching how tools like CodexBar/`ccusage` read the logs. On real histories this was roughly halving an otherwise ~2x inflated total.
+- **Token type breakdown and estimated cost.** The usage analysis now separates input, output, cache reads, and cache writes (split into the 1-hour and 5-minute cache-creation tiers, which are priced differently), and shows an estimated USD cost. Cost uses a fixed per-family price table (Opus/Sonnet/Haiku) with Anthropic's cache multipliers — cache reads at ~0.1x and cache writes at 1.25–2x of input. The Max-vs-Pro recommendation itself remains price-agnostic. Cache reads typically dominate the raw token volume while contributing little to cost, so the total-tokens figure alone was a poor proxy for spend.
 
 ### What's new in 1.3.5
 

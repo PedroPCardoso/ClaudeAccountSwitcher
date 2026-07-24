@@ -189,21 +189,36 @@ public struct ClaudeUsageService: Sendable {
         return total
     }
 
-    /// Lê e soma os tokens de um único arquivo `.jsonl` de sessão.
+    /// Lê e soma os tokens de um único arquivo `.jsonl` de sessão, deduplicando mensagens repetidas.
+    ///
+    /// O Claude Code grava vários chunks de streaming para a MESMA mensagem, todos com
+    /// `message.id` + `requestId` iguais e o mesmo `usage`. Somar linha a linha conta a mesma
+    /// mensagem N vezes (observado ~2x no total real), então contamos cada `message.id:requestId`
+    /// uma única vez (a última vence — os chunks são idênticos). Mesma chave do `CostUsageScanner`
+    /// do CodexBar / `ccusage`; ver `UsageHistoryService.parseFile`. Logs antigos sem os dois IDs
+    /// são tratados como distintos, para não descartar uso legítimo. `messageCount` passa a contar
+    /// mensagens deduplicadas, não linhas.
     private static func parseTokenFile(_ url: URL) -> ClaudeTokenUsage {
         guard let handle = try? FileHandle(forReadingFrom: url), let data = try? handle.readToEnd(), let text = String(data: data, encoding: .utf8) else {
             return .zero
         }
-        var input = 0, output = 0, cacheRead = 0, cacheCreation = 0, messages = 0
+        var keyed: [String: ClaudeTokenUsage] = [:]
+        var total = ClaudeTokenUsage.zero
         for line in text.split(separator: "\n") {
             guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any], object["type"] as? String == "assistant", let message = object["message"] as? [String: Any], let usage = message["usage"] as? [String: Any] else { continue }
-            input += (usage["input_tokens"] as? NSNumber)?.intValue ?? 0
-            output += (usage["output_tokens"] as? NSNumber)?.intValue ?? 0
-            cacheRead += (usage["cache_read_input_tokens"] as? NSNumber)?.intValue ?? 0
-            cacheCreation += (usage["cache_creation_input_tokens"] as? NSNumber)?.intValue ?? 0
-            messages += 1
+            let entry = ClaudeTokenUsage(
+                input: (usage["input_tokens"] as? NSNumber)?.intValue ?? 0,
+                output: (usage["output_tokens"] as? NSNumber)?.intValue ?? 0,
+                cacheRead: (usage["cache_read_input_tokens"] as? NSNumber)?.intValue ?? 0,
+                cacheCreation: (usage["cache_creation_input_tokens"] as? NSNumber)?.intValue ?? 0,
+                messageCount: 1)
+            if let messageId = message["id"] as? String, let requestId = object["requestId"] as? String {
+                keyed["\(messageId):\(requestId)"] = entry
+            } else {
+                total = total + entry
+            }
         }
-        return ClaudeTokenUsage(input: input, output: output, cacheRead: cacheRead, cacheCreation: cacheCreation, messageCount: messages)
+        return keyed.values.reduce(total, +)
     }
 
     private func accessToken(profileDirectory: URL) -> String? {

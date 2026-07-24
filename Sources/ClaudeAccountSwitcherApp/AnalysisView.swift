@@ -26,8 +26,8 @@ struct AnalysisView: View {
                 accountSelector.frame(width: 230)
             }
             Text(AppStrings.t(
-                "Baseado nos tokens somados das sessões locais (.jsonl) das contas selecionadas. Não usa preço nem limite de plano — a leitura é relativa ao seu próprio histórico.",
-                "Based on summed tokens from the selected accounts' local sessions (.jsonl). It uses neither price nor plan limits — the reading is relative to your own history."))
+                "Baseado nos tokens somados das sessões locais (.jsonl) das contas selecionadas, deduplicando chunks de streaming. A recomendação não usa preço nem limite de plano — é relativa ao seu histórico. O custo é uma estimativa por tabela de preços fixa (Opus/Sonnet/Haiku), com cache lido a ~0,1x e cache escrito a 1,25–2x do input.",
+                "Based on summed tokens from the selected accounts' local sessions (.jsonl), deduplicating streaming chunks. The recommendation uses neither price nor plan limits — it is relative to your own history. Cost is an estimate from a fixed price table (Opus/Sonnet/Haiku), with cache reads at ~0.1x and cache writes at 1.25–2x of input."))
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(20)
@@ -92,9 +92,12 @@ struct AnalysisView: View {
                     }
                 }
                 .frame(minHeight: 260)
-                Text(AppStrings.t("Total agregado no período: \(totalTokens.formatted()) tokens",
-                                  "Aggregate total for the period: \(totalTokens.formatted()) tokens"))
-                    .font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(AppStrings.t("Total agregado no período: \(totalTokens.formatted()) tokens · custo estimado ~\(formattedCost)",
+                                      "Aggregate total for the period: \(totalTokens.formatted()) tokens · estimated cost ~\(formattedCost)"))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(cacheBreakdownLine).font(.caption2).foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -138,6 +141,28 @@ struct AnalysisView: View {
     }
 
     private var totalTokens: Int { series.reduce(0) { $0 + $1.total } }
+    private var totalCostUSD: Double { series.reduce(0) { $0 + $1.totalCostUSD } }
+
+    /// Soma a quebra por tipo de todos os dias/perfis da série, para a linha de detalhamento.
+    private var aggregateBreakdown: TokenBreakdown {
+        series.flatMap { $0.breakdownPerProfile.values }.reduce(.zero, +)
+    }
+
+    private var formattedCost: String {
+        let f = NumberFormatter(); f.numberStyle = .currency; f.currencyCode = "USD"
+        f.maximumFractionDigits = totalCostUSD >= 100 ? 0 : 2
+        return f.string(from: NSNumber(value: totalCostUSD)) ?? "$\(totalCostUSD)"
+    }
+
+    /// Linha "input X · output Y · cache-read Z · cache-write W" — deixa visível que a leitura de
+    /// cache (barata) e a escrita de cache (cara) são coisas distintas por trás do total.
+    private var cacheBreakdownLine: String {
+        let b = aggregateBreakdown
+        func n(_ v: Int) -> String { v.formatted() }
+        return AppStrings.t(
+            "input \(n(b.input)) · output \(n(b.output)) · cache lido \(n(b.cacheRead)) · cache escrito \(n(b.cacheCreation))",
+            "input \(n(b.input)) · output \(n(b.output)) · cache read \(n(b.cacheRead)) · cache write \(n(b.cacheCreation))")
+    }
 
     // MARK: - Verdict presentation (bilingual, built here from the Core verdict)
 

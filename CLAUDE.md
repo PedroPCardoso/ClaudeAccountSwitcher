@@ -8,7 +8,7 @@ App nativo macOS (SwiftUI/AppKit), menu-bar app, chamado "Claude Account Switche
 múltiplos perfis/contas isolados do Claude Code (cada um com seu próprio `CLAUDE_CONFIG_DIR`,
 credenciais, histórico, config) e permite alternar entre eles. A troca só afeta novos processos;
 sessões shell/GUI já abertas não são alteradas. README completo e changelog vivem em
-`README.md` (versão atual: 1.3.5 na última leitura).
+`README.md` (versão atual: 1.3.6 na última leitura).
 
 Componentes de produto (ver specs para detalhes de design):
 - Gerenciamento de perfis: `ProfileStore` (persistência), `ActivationService` (troca com rollback),
@@ -63,8 +63,14 @@ Caminho base: raiz do repositório.
   70/90) para colorir o % da barra de menu (feature 1.3.5, issue #33).
 - `StatusBarUsage.swift` — `label(activeUsage:)` monta o `"NN%"` da barra de menu casando a cota
   pela identidade estável `QuotaKind.fiveHour` (issue #33).
-- `UsageHistory.swift` — `DailyTokenUsage`, `PlanRecommendation` (+ `evaluate`) e `AnalysisSelection`
-  (lógica pura de seleção de contas) da análise de uso agregado (feature 1.3.5, issue #34).
+- `UsageHistory.swift` — `TokenBreakdown` (tokens por tipo: input/output/cacheRead/cache 1h/5m),
+  `DailyTokenUsage` (quebra + custo USD por perfil no dia; `perProfile`/`total` são computados do
+  breakdown p/ compat), `PlanRecommendation` (+ `evaluate`) e `AnalysisSelection` (seleção de
+  contas) da análise de uso agregado (feature 1.3.5, issue #34; quebra+custo em 1.3.6).
+- `TokenCost.swift` — `ModelPricing` (puro, sem I/O): tabela FIXA de preços por família
+  (Opus/Sonnet/Haiku) com os multiplicadores de cache da Anthropic (cache lido ~0,1x, escrito 5m
+  1,25x, escrito 1h 2x, output ~5x); `costUSD(model:tokens:)` → `nil` p/ modelo desconhecido.
+  Espelha a lógica do `CostUsagePricing` do CodexBar/`ccusage` (feature 1.3.6).
 - `ProfileResolver.swift` — `resolve(_:query:)` do CLI `cas` (match exato nome/email →
   found/notFound/ambiguous, issue #35).
 - `CASCommand.swift` — `CASParser.parse`/`CASCommand`: parsing/dispatch do CLI `cas` com exit code,
@@ -80,9 +86,14 @@ Caminho base: raiz do repositório.
 - `ClaudeLocator.swift` — localiza o binário `claude` real em `~/.local/share/claude/versions/...`.
 - `ClaudeUsageService.swift` — busca cotas de uso via endpoint OAuth
   `https://api.anthropic.com/api/oauth/usage`; parse de `five_hour`, `seven_day`,
-  `seven_day_<modelo>`; parsing de `resets_at` com timestamps ISO8601 fracionários.
-- `UsageHistoryService.swift` — parseia os `.jsonl` de sessão em buckets diários de tokens por
-  perfil (agrega só os perfis recebidos; cache por mtime+size), base da análise agregada (issue #34).
+  `seven_day_<modelo>`; parsing de `resets_at` com timestamps ISO8601 fracionários. `tokenUsage`
+  soma os `.jsonl` locais deduplicando por `message.id:requestId` (chunks de streaming repetidos;
+  `messageCount` conta mensagens, não linhas — 1.3.6).
+- `UsageHistoryService.swift` — parseia os `.jsonl` de sessão em séries diárias por perfil, com a
+  quebra por tipo de token e o custo USD estimado (`ModelPricing`). Deduplica cada
+  `message.id:requestId` uma vez, dentro do arquivo E entre arquivos da conta (sessões retomadas);
+  agrega só os perfis recebidos; cache por mtime+size. Base da análise agregada (issue #34;
+  dedup+quebra+custo em 1.3.6).
 - `DesktopAppActivator.swift` / `DesktopAppClient.swift` — localiza, encerra e relança o app
   desktop nativo do Claude (`com.anthropic.claudefordesktop`) apontando para o perfil escolhido.
 - `LaunchdEnvironment.swift` — wrapper de `launchctl setenv/unsetenv CLAUDE_CONFIG_DIR`.

@@ -66,6 +66,10 @@ enum ProfileStoreTests {
             ,("daily usage aggregates only the profiles it receives", testDailyUsageRespectsSelection)
             ,("daily usage skips invalid lines and empty files", testDailyUsageRobustness)
             ,("daily usage reuses cache for unmodified files", testDailyUsageCachesUnmodifiedFiles)
+            ,("daily usage deduplicates streaming chunks by message/request id", testDailyUsageDeduplicatesStreamingChunks)
+            ,("token usage deduplicates streaming chunks by message/request id", testTokenUsageDeduplicatesStreamingChunks)
+            ,("model pricing weights cache tokens by type", testModelPricingWeightsCacheTokensByType)
+            ,("daily usage preserves token breakdown and estimates cost", testDailyUsagePreservesBreakdownAndCost)
             ,("analysis selection defaults to all and honors a saved subset", testAnalysisSelection)
             ,("plan recommendation classifies fabricated series", testPlanRecommendationVerdicts)
             ,("activation skips desktop sync when disabled", testActivationSkipsDesktopWhenDisabled)
@@ -719,6 +723,19 @@ enum ProfileStoreTests {
         #"{"type":"assistant","timestamp":"\#(timestamp)","message":{"usage":{"input_tokens":\#(input),"output_tokens":\#(output),"cache_read_input_tokens":\#(cacheRead),"cache_creation_input_tokens":\#(cacheCreation)}}}"#
     }
 
+    /// Linha `assistant` com `message.id` + `requestId` (formato atual do Claude Code) para exercitar
+    /// a deduplicação de chunks de streaming.
+    private static func keyedAssistantLine(_ timestamp: String, id: String, req: String, input: Int = 0, output: Int = 0, cacheRead: Int = 0, cacheCreation: Int = 0) -> String {
+        #"{"type":"assistant","timestamp":"\#(timestamp)","requestId":"\#(req)","message":{"id":"\#(id)","usage":{"input_tokens":\#(input),"output_tokens":\#(output),"cache_read_input_tokens":\#(cacheRead),"cache_creation_input_tokens":\#(cacheCreation)}}}"#
+    }
+
+    /// Linha `assistant` com `model` e o split de escrita de cache 1h/5m, para exercitar a
+    /// quebra por tipo e o custo estimado.
+    private static func pricedAssistantLine(_ timestamp: String, model: String, id: String, req: String, input: Int = 0, output: Int = 0, cacheRead: Int = 0, cacheCreation1h: Int = 0, cacheCreation5m: Int = 0) -> String {
+        let creation = cacheCreation1h + cacheCreation5m
+        return #"{"type":"assistant","timestamp":"\#(timestamp)","requestId":"\#(req)","message":{"id":"\#(id)","model":"\#(model)","usage":{"input_tokens":\#(input),"output_tokens":\#(output),"cache_read_input_tokens":\#(cacheRead),"cache_creation_input_tokens":\#(creation),"cache_creation":{"ephemeral_1h_input_tokens":\#(cacheCreation1h),"ephemeral_5m_input_tokens":\#(cacheCreation5m)}}}}"#
+    }
+
     static func testDailyUsageBucketsByDayAndProfile() throws {
         let root = try temporaryRoot()
         let a = try makeAnalysisProfile(root: root, name: "A", file: "s.jsonl", contents: [
@@ -788,6 +805,91 @@ enum ProfileStoreTests {
         try FileManager.default.setAttributes([.modificationDate: fixedMtime], ofItemAtPath: jsonl.path)
         let cached = service.dailyUsage(profiles: [profile], now: now)
         try check(cached == first, "cache did not reuse the unmodified file (mtime+size unchanged)")
+    }
+
+    static func testDailyUsageDeduplicatesStreamingChunks() throws {
+        let root = try temporaryRoot()
+        // Mensagem A: 3 chunks idênticos (msg1/req1, 150 tokens) → deve contar 1x.
+        // Mensagem B: distinta (msg2/req2, 200 tokens). Total correto = 350, não 3*150+200.
+        let contents = [
+            keyedAssistantLine("2026-06-01T12:00:00.000Z", id: "msg1", req: "req1", input: 100, output: 50),
+            keyedAssistantLine("2026-06-01T12:00:01.000Z", id: "msg1", req: "req1", input: 100, output: 50),
+            keyedAssistantLine("2026-06-01T12:00:02.000Z", id: "msg1", req: "req1", input: 100, output: 50),
+            keyedAssistantLine("2026-06-01T12:00:03.000Z", id: "msg2", req: "req2", input: 200)
+        ].joined(separator: "\n")
+        let a = try makeAnalysisProfile(root: root, name: "A", file: "s.jsonl", contents: contents)
+        let now = ClaudeUsageService.parseResetDate("2026-06-10T00:00:00Z")!
+        let series = UsageHistoryService().dailyUsage(profiles: [a], now: now)
+        try check(series.count == 1 && series[0].total == 350, "streaming chunks devem contar uma vez: esperado 350, veio \(series.first?.total ?? -1)")
+
+        // Dedup também ENTRE arquivos da mesma conta: a mesma msg1/req1 num segundo arquivo
+        // (ex.: sessão retomada que copia o histórico) não deve recontar.
+        let proj2 = a.directory.appendingPathComponent("projects/proj2")
+        try FileManager.default.createDirectory(at: proj2, withIntermediateDirectories: true)
+        try keyedAssistantLine("2026-06-01T12:00:00.000Z", id: "msg1", req: "req1", input: 100, output: 50)
+            .data(using: .utf8)!.write(to: proj2.appendingPathComponent("dup.jsonl"))
+        let series2 = UsageHistoryService().dailyUsage(profiles: [a], now: now)
+        try check(series2.count == 1 && series2[0].total == 350, "duplicata cross-file de msg1/req1 não pode recontar: esperado 350, veio \(series2.first?.total ?? -1)")
+    }
+
+    static func testTokenUsageDeduplicatesStreamingChunks() throws {
+        let profile = try temporaryRoot()
+        let projects = profile.appendingPathComponent("projects/proj"); try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+        // msg1/req1 repetido 2x (100/50) + msg2/req2 distinto (10/5). Correto: input 110, output 55, 2 mensagens.
+        let contents = [
+            keyedAssistantLine("2026-06-01T12:00:00.000Z", id: "msg1", req: "req1", input: 100, output: 50),
+            keyedAssistantLine("2026-06-01T12:00:01.000Z", id: "msg1", req: "req1", input: 100, output: 50),
+            keyedAssistantLine("2026-06-01T12:00:02.000Z", id: "msg2", req: "req2", input: 10, output: 5)
+        ].joined(separator: "\n")
+        try contents.data(using: .utf8)!.write(to: projects.appendingPathComponent("s.jsonl"))
+        let usage = ClaudeUsageService().tokenUsage(profileDirectory: profile)
+        try check(usage.input == 110 && usage.output == 55, "chunk duplicado contado duas vezes: input=\(usage.input) output=\(usage.output)")
+        try check(usage.messageCount == 2, "messageCount deve contar mensagens deduplicadas, veio \(usage.messageCount)")
+    }
+
+    static func testModelPricingWeightsCacheTokensByType() throws {
+        // Família reconhecida pelo id do modelo.
+        try check(ModelPricing.family(for: "claude-sonnet-4-5-20990101") == .sonnet, "sonnet id should map to sonnet")
+        try check(ModelPricing.family(for: "claude-opus-4-1") == .opus, "opus id should map to opus")
+        try check(ModelPricing.family(for: "claude-3-5-haiku-20241022") == .haiku, "haiku id should map to haiku")
+        try check(ModelPricing.family(for: "gpt-4o") == nil, "unknown model should have no family")
+
+        // Sonnet (por milhão): input 3, output 15, cache lido 0,30, cache escrito 5m 3,75, 1h 6.
+        // 1M de cada → 3 + 15 + 0,30 + 3,75 + 6 = 28,05.
+        let m = 1_000_000
+        let tokens = TokenBreakdown(input: m, output: m, cacheRead: m, cacheCreation5m: m, cacheCreation1h: m)
+        let cost = ModelPricing.costUSD(model: "claude-sonnet-4-5", tokens: tokens)
+        try check(cost != nil && abs(cost! - 28.05) < 1e-6, "sonnet cost should be 28.05, got \(cost as Any)")
+        // Leitura de cache é MUITO mais barata que escrita 1h (0,30 vs 6 por milhão → 20x).
+        let read = ModelPricing.costUSD(model: "sonnet", tokens: TokenBreakdown(cacheRead: m))!
+        let write1h = ModelPricing.costUSD(model: "sonnet", tokens: TokenBreakdown(cacheCreation1h: m))!
+        try check(abs(write1h - read * 20) < 1e-6, "1h cache write should cost 20x a cache read")
+        // Modelo desconhecido → nil (não precificado, nunca custo 0 disfarçado).
+        try check(ModelPricing.costUSD(model: "gpt-4o", tokens: tokens) == nil, "unknown model must not be priced")
+    }
+
+    static func testDailyUsagePreservesBreakdownAndCost() throws {
+        let root = try temporaryRoot()
+        let m = 1_000_000
+        // Uma mensagem Sonnet com todos os tipos (1M cada) + uma linha de modelo desconhecido
+        // (só input, 500 tokens): entra no volume mas NÃO no custo.
+        let contents = [
+            pricedAssistantLine("2026-06-01T12:00:00.000Z", model: "claude-sonnet-4-5", id: "msg1", req: "req1",
+                                input: m, output: m, cacheRead: m, cacheCreation1h: m, cacheCreation5m: m),
+            keyedAssistantLine("2026-06-01T13:00:00.000Z", id: "msg2", req: "req2", input: 500) // sem model → cost nil
+        ].joined(separator: "\n")
+        let a = try makeAnalysisProfile(root: root, name: "A", file: "s.jsonl", contents: contents)
+        let now = ClaudeUsageService.parseResetDate("2026-06-10T00:00:00Z")!
+        let series = UsageHistoryService().dailyUsage(profiles: [a], now: now)
+        try check(series.count == 1, "expected a single day, got \(series.count)")
+        let b = series[0].breakdownPerProfile[a.id]
+        try check(b != nil, "profile A must have a breakdown")
+        try check(b!.cacheRead == m && b!.cacheCreation5m == m && b!.cacheCreation1h == m, "cache split wrong: \(String(describing: b))")
+        try check(b!.input == m + 500 && b!.output == m, "input/output wrong: \(String(describing: b))")
+        // Custo = só a mensagem Sonnet (28,05); a linha de modelo desconhecido não soma.
+        let cost = series[0].costPerProfile[a.id]
+        try check(cost != nil && abs(cost! - 28.05) < 1e-6, "day cost should be 28.05 (unknown model excluded), got \(cost as Any)")
+        try check(abs(series[0].totalCostUSD - 28.05) < 1e-6, "totalCostUSD should aggregate to 28.05")
     }
 
     static func testAnalysisSelection() throws {
