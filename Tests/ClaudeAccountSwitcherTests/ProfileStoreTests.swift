@@ -68,6 +68,8 @@ enum ProfileStoreTests {
             ,("paseo integrate points the claude provider at the symlink and preserves other providers", testPaseoIntegrateSetsClaudeProviderEnv)
             ,("paseo integrate backs up the original config before writing", testPaseoIntegrateBacksUpOriginal)
             ,("activation updates the paseo symlink alongside launchd", testActivationUpdatesPaseoSymlink)
+            ,("usage tier maps percent to the same thresholds as the usage view", testUsageTierForPercent)
+            ,("status bar label reads the five-hour quota by stable kind", testStatusBarUsageLabel)
         ]
         var failures = 0
         for (name, test) in tests {
@@ -223,6 +225,23 @@ enum ProfileStoreTests {
         _ = try await service.activate(profile)
         try check(try FileManager.default.destinationOfSymbolicLink(atPath: paseo.activeConfigDirSymlink.path) == directory.path, "activation did not update the paseo symlink")
         try? FileManager.default.removeItem(at: profile.desktopDirectory)
+    }
+
+    static func testUsageTierForPercent() throws {
+        try check(UsageTier.forPercent(0) == .ok, "0% should be ok")
+        try check(UsageTier.forPercent(69) == .ok, "69% should be ok")
+        try check(UsageTier.forPercent(70) == .warning, "70% should be warning")
+        try check(UsageTier.forPercent(89) == .warning, "89% should be warning")
+        try check(UsageTier.forPercent(90) == .critical, "90% should be critical")
+        try check(UsageTier.forPercent(100) == .critical, "100% should be critical")
+    }
+
+    static func testStatusBarUsageLabel() throws {
+        try check(StatusBarUsage.label(activeUsage: nil) == nil, "nil usage should produce no label")
+        let fiveHour = ClaudeUsageSnapshot(quotas: [ClaudeQuota(kind: .fiveHour, key: "Janela 5h", usedPercent: 71.6)], source: "test")
+        try check(StatusBarUsage.label(activeUsage: fiveHour) == "72%", "71.6% should round to 72%")
+        let weeklyOnly = ClaudeUsageSnapshot(quotas: [ClaudeQuota(kind: .sevenDay, key: "Semanal", usedPercent: 40)], source: "test")
+        try check(StatusBarUsage.label(activeUsage: weeklyOnly) == nil, "a snapshot without a five-hour quota should produce no label")
     }
 
     static func temporaryRoot() throws -> URL {
