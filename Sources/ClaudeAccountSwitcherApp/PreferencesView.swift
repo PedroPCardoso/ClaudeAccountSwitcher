@@ -20,7 +20,7 @@ struct PreferencesView: View {
     @AppStorage(FiveHourAlertSound.defaultsKey) private var fiveHourSoundRaw: String = FiveHourAlertSound.default.rawValue
     @AppStorage(WeeklyCreditsAlertThreshold.defaultsKey) private var weeklyCreditsThreshold: Double = WeeklyCreditsAlertThreshold.default
     @AppStorage(AppPreferences.relaunchDesktopOnSwitch) private var relaunchDesktopOnSwitch: Bool = false
-    @AppStorage(AppPreferences.showUsageInMenuBar) private var showUsageInMenuBar: Bool = true
+    @AppStorage(AppPreferences.showUsageInMenuBar) private var showUsageInMenuBar: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {

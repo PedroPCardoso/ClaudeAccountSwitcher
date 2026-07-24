@@ -8,8 +8,7 @@ enum AppPreferences {
     static let relaunchDesktopOnSwitch = "relaunchDesktopOnSwitch"
 
     /// When enabled, the menu bar item shows the active account's 5-hour usage percentage next
-    /// to the icon, coloured by tier. Enabled by default. Registered with a `true` fallback so
-    /// an unset value reads as on.
+    /// to the icon, coloured by tier. Disabled by default; an unset value reads as off.
     static let showUsageInMenuBar = "showUsageInMenuBar"
 
     /// UUIDs (as strings) of the profiles included in the aggregate usage analysis. Absent key
@@ -100,7 +99,6 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        UserDefaults.standard.register(defaults: [AppPreferences.showUsageInMenuBar: true])
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let logoURL = Bundle.main.url(forResource: "claude-account-switcher-logo", withExtension: "png"), let logo = NSImage(contentsOf: logoURL) {
             logo.size = NSSize(width: 18, height: 18)
@@ -160,8 +158,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     /// Compõe o botão do status item: imagem sempre; e, quando o toggle está ligado e a conta
-    /// ativa tem cota de 5h, um título curto ("72%") colorido por faixa (`UsageTier`). Sem conta
-    /// ativa / sem usage / sem cota de 5h / toggle desligado → só o ícone.
+    /// ativa tem cota de 5h, o percentual em texto negrito colorido por faixa (`UsageTier`) — a
+    /// cor carrega o significado. Sem conta ativa / sem usage / sem cota de 5h / toggle
+    /// desligado → só o ícone.
     private func updateStatusItemUsage() {
         guard let button = statusItem?.button else { return }
         func showIconOnly() {
@@ -178,7 +177,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         button.imagePosition = .imageLeft
         button.attributedTitle = NSAttributedString(string: " " + label, attributes: [
             .foregroundColor: statusColor(for: UsageTier.forPercent(quota.usedPercent)),
-            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+            .font: usageBadgeFont()
         ])
         statusItem.length = NSStatusItem.variableLength
     }
@@ -190,6 +189,15 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         case .warning: return .systemOrange
         case .critical: return .systemRed
         }
+    }
+
+    /// Fonte do percentual: SF Rounded, bold, com dígitos monoespaçados (largura estável entre
+    /// atualizações e aparência mais moderna que a system font padrão).
+    private func usageBadgeFont() -> NSFont {
+        let mono = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold)
+        if let rounded = mono.fontDescriptor.withDesign(.rounded),
+           let font = NSFont(descriptor: rounded, size: 13) { return font }
+        return mono
     }
 
     private var relaunchDesktopOnSwitch: Bool { UserDefaults.standard.bool(forKey: AppPreferences.relaunchDesktopOnSwitch) }
