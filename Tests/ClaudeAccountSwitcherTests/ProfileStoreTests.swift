@@ -62,6 +62,12 @@ enum ProfileStoreTests {
             ,("usage fetch retries on 5xx and succeeds", testUsageRetriesOnServerError)
             ,("usage fetch does not retry on 401", testUsageDoesNotRetryUnauthorized)
             ,("token usage caches unmodified files", testTokenUsageCachesUnmodifiedFiles)
+            ,("daily usage buckets tokens by day and profile", testDailyUsageBucketsByDayAndProfile)
+            ,("daily usage aggregates only the profiles it receives", testDailyUsageRespectsSelection)
+            ,("daily usage skips invalid lines and empty files", testDailyUsageRobustness)
+            ,("daily usage reuses cache for unmodified files", testDailyUsageCachesUnmodifiedFiles)
+            ,("analysis selection defaults to all and honors a saved subset", testAnalysisSelection)
+            ,("plan recommendation classifies fabricated series", testPlanRecommendationVerdicts)
             ,("activation skips desktop sync when disabled", testActivationSkipsDesktopWhenDisabled)
             ,("paseo integration is not detected without a config file", testPaseoNotDetectedWithoutConfig)
             ,("paseo symlink re-targets atomically on repeated switches", testPaseoSymlinkRetargets)
@@ -696,6 +702,126 @@ enum ProfileStoreTests {
         try FileManager.default.setAttributes([.modificationDate: fixedMtime], ofItemAtPath: jsonl.path)
         let cached = service.tokenUsage(profileDirectory: profile)
         try check(cached == first, "cache did not reuse the unmodified file (mtime+size unchanged)")
+    }
+
+    // MARK: - Aggregate usage analysis (#34)
+
+    /// Cria um perfil cujo diretório contém `projects/proj/<file>.jsonl` com o conteúdo dado.
+    private static func makeAnalysisProfile(root: URL, name: String, file: String, contents: String) throws -> Profile {
+        let directory = root.appendingPathComponent(name).appendingPathComponent("config")
+        let projects = directory.appendingPathComponent("projects/proj")
+        try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+        try contents.data(using: .utf8)!.write(to: projects.appendingPathComponent(file))
+        return Profile(name: name, directory: directory)
+    }
+
+    private static func assistantLine(_ timestamp: String, input: Int = 0, output: Int = 0, cacheRead: Int = 0, cacheCreation: Int = 0) -> String {
+        #"{"type":"assistant","timestamp":"\#(timestamp)","message":{"usage":{"input_tokens":\#(input),"output_tokens":\#(output),"cache_read_input_tokens":\#(cacheRead),"cache_creation_input_tokens":\#(cacheCreation)}}}"#
+    }
+
+    static func testDailyUsageBucketsByDayAndProfile() throws {
+        let root = try temporaryRoot()
+        let a = try makeAnalysisProfile(root: root, name: "A", file: "s.jsonl", contents: [
+            assistantLine("2026-06-01T12:00:00.000Z", input: 100, output: 50),   // D1 = 150
+            assistantLine("2026-06-02T12:00:00.000Z", input: 200),               // D2 = 200
+            assistantLine("2026-06-03T12:00:00.000Z", input: 300, cacheRead: 100) // D3 = 400
+        ].joined(separator: "\n"))
+        let b = try makeAnalysisProfile(root: root, name: "B", file: "s.jsonl", contents: [
+            assistantLine("2026-06-01T12:00:00.000Z", input: 10, output: 5),      // D1 = 15
+            assistantLine("2026-06-03T12:00:00.000Z", output: 25)                 // D3 = 25
+        ].joined(separator: "\n"))
+
+        let now = ClaudeUsageService.parseResetDate("2026-06-10T00:00:00Z")!
+        let series = UsageHistoryService().dailyUsage(profiles: [a, b], now: now)
+        try check(series.count == 3, "expected 3 daily buckets, got \(series.count)")
+        try check(series[0].perProfile[a.id] == 150 && series[0].perProfile[b.id] == 15 && series[0].total == 165, "D1 breakdown wrong: \(series[0].perProfile)")
+        try check(series[1].perProfile[a.id] == 200 && series[1].perProfile[b.id] == nil && series[1].total == 200, "D2 breakdown wrong: \(series[1].perProfile)")
+        try check(series[2].perProfile[a.id] == 400 && series[2].perProfile[b.id] == 25 && series[2].total == 425, "D3 breakdown wrong: \(series[2].perProfile)")
+        try check(series[0].day < series[1].day && series[1].day < series[2].day, "buckets are not sorted ascending by day")
+    }
+
+    static func testDailyUsageRespectsSelection() throws {
+        let root = try temporaryRoot()
+        let a = try makeAnalysisProfile(root: root, name: "A", file: "s.jsonl", contents: assistantLine("2026-06-01T12:00:00.000Z", input: 100))
+        let b = try makeAnalysisProfile(root: root, name: "B", file: "s.jsonl", contents: assistantLine("2026-06-01T12:00:00.000Z", input: 999))
+        let now = ClaudeUsageService.parseResetDate("2026-06-10T00:00:00Z")!
+
+        let onlyA = UsageHistoryService().dailyUsage(profiles: [a], now: now)
+        try check(onlyA.count == 1 && onlyA[0].perProfile[b.id] == nil && onlyA[0].total == 100, "series should ignore the profile not passed by the caller")
+
+        let none = UsageHistoryService().dailyUsage(profiles: [], now: now)
+        try check(none.isEmpty, "empty profile list should yield an empty series")
+    }
+
+    static func testDailyUsageRobustness() throws {
+        let root = try temporaryRoot()
+        let mixed = [
+            #"{"type":"user","timestamp":"2026-06-01T12:00:00.000Z","message":{"usage":{"input_tokens":500}}}"#, // non-assistant → skip
+            #"{"type":"assistant","message":{"usage":{"input_tokens":700}}}"#,                                    // no timestamp → skip
+            assistantLine("2026-06-01T12:00:00.000Z", input: 42),                                                 // valid
+            "not json at all"                                                                                     // garbage → skip
+        ].joined(separator: "\n")
+        let valid = try makeAnalysisProfile(root: root, name: "V", file: "s.jsonl", contents: mixed)
+        let empty = try makeAnalysisProfile(root: root, name: "E", file: "s.jsonl", contents: "")
+        let now = ClaudeUsageService.parseResetDate("2026-06-10T00:00:00Z")!
+        let series = UsageHistoryService().dailyUsage(profiles: [valid, empty], now: now)
+        try check(series.count == 1 && series[0].total == 42 && series[0].perProfile[empty.id] == nil, "only the single valid assistant line should count; empty file contributes no bucket")
+    }
+
+    static func testDailyUsageCachesUnmodifiedFiles() throws {
+        let root = try temporaryRoot()
+        let profile = try makeAnalysisProfile(root: root, name: "C", file: "s.jsonl", contents: assistantLine("2026-06-01T12:00:00.000Z", input: 100, output: 50))
+        let jsonl = profile.directory.appendingPathComponent("projects/proj/s.jsonl")
+        // Fixa o mtime a um valor determinístico antes da 1ª leitura (padrão do teste de #24).
+        let fixedMtime = Date(timeIntervalSince1970: 1_000_000)
+        try FileManager.default.setAttributes([.modificationDate: fixedMtime], ofItemAtPath: jsonl.path)
+        let now = ClaudeUsageService.parseResetDate("2026-06-10T00:00:00Z")!
+        let service = UsageHistoryService()
+        let first = service.dailyUsage(profiles: [profile], now: now)
+        try check(first.count == 1 && first[0].total == 150, "did not bucket tokens on first read")
+
+        // Sobrescreve com lixo do MESMO tamanho e restaura o mesmo mtime: se o cache por
+        // (mtime, tamanho) funcionar, a série permanece; se relesse, o lixo zeraria a contagem.
+        let original = assistantLine("2026-06-01T12:00:00.000Z", input: 100, output: 50)
+        let garbage = String(repeating: "x", count: original.utf8.count)
+        try garbage.data(using: .utf8)!.write(to: jsonl)
+        try FileManager.default.setAttributes([.modificationDate: fixedMtime], ofItemAtPath: jsonl.path)
+        let cached = service.dailyUsage(profiles: [profile], now: now)
+        try check(cached == first, "cache did not reuse the unmodified file (mtime+size unchanged)")
+    }
+
+    static func testAnalysisSelection() throws {
+        let a = Profile(name: "A", directory: URL(fileURLWithPath: "/tmp/a"))
+        let b = Profile(name: "B", directory: URL(fileURLWithPath: "/tmp/b"))
+        // Sem chave → todas selecionadas.
+        try check(AnalysisSelection.selected(from: [a, b], savedRawIDs: nil).count == 2, "absent key should select all profiles")
+        try check(AnalysisSelection.isSelected(a.id, savedRawIDs: nil), "absent key should mark every profile selected")
+        // Subconjunto salvo → só esses.
+        let subset = AnalysisSelection.selected(from: [a, b], savedRawIDs: [a.id.uuidString])
+        try check(subset.count == 1 && subset[0].id == a.id, "a saved subset should select only its members")
+        // ID inexistente salvo → ignorado sem quebrar.
+        let withGhost = AnalysisSelection.selected(from: [a, b], savedRawIDs: [a.id.uuidString, UUID().uuidString])
+        try check(withGhost.count == 1 && withGhost[0].id == a.id, "an unknown saved id must be ignored, not crash")
+        // Seleção vazia (chave presente, sem ids conhecidos) → nada selecionado.
+        try check(AnalysisSelection.selected(from: [a, b], savedRawIDs: []).isEmpty, "an explicit empty selection should select nothing")
+    }
+
+    static func testPlanRecommendationVerdicts() throws {
+        let idA = UUID(); let idB = UUID()
+        func day(_ i: Int, _ perProfile: [UUID: Int]) -> DailyTokenUsage {
+            DailyTokenUsage(day: Date(timeIntervalSince1970: Double(i) * 86_400), perProfile: perProfile)
+        }
+        // Seleção vazia → inconclusivo.
+        try check(PlanRecommendation.evaluate(series: [], selectedProfileCount: 0).verdict == .inconclusive, "empty selection should be inconclusive")
+        // Histórico curto → inconclusivo.
+        let short = (0..<3).map { day($0, [idA: 100]) }
+        try check(PlanRecommendation.evaluate(series: short, selectedProfileCount: 2).verdict == .inconclusive, "too few active days should be inconclusive")
+        // Uso raramente sobrepõe (uma conta por dia) → 1 Max provavelmente cobre.
+        let solo = (0..<6).map { day($0, [$0 % 2 == 0 ? idA : idB: 100]) }
+        try check(PlanRecommendation.evaluate(series: solo, selectedProfileCount: 2).verdict == .singleMaxLikelyEnough, "sporadic non-overlapping usage should favor a single Max")
+        // Demanda simultânea recorrente em duas contas → múltiplos Pro justificados.
+        let concurrent = (0..<6).map { day($0, [idA: 100, idB: 100]) }
+        try check(PlanRecommendation.evaluate(series: concurrent, selectedProfileCount: 2).verdict == .multipleProJustified, "recurring concurrent demand should justify multiple Pro plans")
     }
 
     static func testLauncherEscapesQuoteInPath() throws {

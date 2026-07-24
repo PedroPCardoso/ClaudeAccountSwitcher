@@ -11,6 +11,24 @@ enum AppPreferences {
     /// to the icon, coloured by tier. Enabled by default. Registered with a `true` fallback so
     /// an unset value reads as on.
     static let showUsageInMenuBar = "showUsageInMenuBar"
+
+    /// UUIDs (as strings) of the profiles included in the aggregate usage analysis. Absent key
+    /// = every profile selected (the obvious first-run default). See `AnalysisSelection` for the
+    /// pure selection logic.
+    static let analysisSelectedProfileIDs = "analysisSelectedProfileIDs"
+
+    /// Raw persisted selection, or `nil` when the key was never written (→ all selected).
+    static func analysisSavedRawIDs() -> [String]? {
+        UserDefaults.standard.object(forKey: analysisSelectedProfileIDs) as? [String]
+    }
+
+    static func setAnalysisSelection(_ ids: [UUID]) {
+        UserDefaults.standard.set(ids.map(\.uuidString), forKey: analysisSelectedProfileIDs)
+    }
+
+    static func analysisSelectedProfiles(from profiles: [Profile]) -> [Profile] {
+        AnalysisSelection.selected(from: profiles, savedRawIDs: analysisSavedRawIDs())
+    }
 }
 
 @MainActor
@@ -28,6 +46,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private let paseo: PaseoIntegration
     private var preferencesWindowController: PreferencesWindowController?
     private var usageWindowController: UsageWindowController?
+    private var analysisWindowController: AnalysisWindowController?
     private var usageRefreshTimer: Timer?
     private var isRefreshingUsage = false
     private var fiveHourAlert = FiveHourAlertTracker()
@@ -130,6 +149,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         usageItem.target = self
         usageItem.toolTip = AppStrings.t("Abre o painel visual com uso e tokens de todas as contas", "Opens the visual panel with usage and tokens for every account")
         menu.addItem(usageItem)
+        let analysisItem = NSMenuItem(title: AppStrings.t("Analisar uso agregado…", "Analyze aggregate usage…"), action: #selector(openAnalysis), keyEquivalent: "")
+        analysisItem.target = self
+        analysisItem.toolTip = AppStrings.t("Compara o consumo somado das contas escolhidas: 1 Max vs 2–3 Pro", "Compares summed usage of the chosen accounts: 1 Max vs 2–3 Pro")
+        menu.addItem(analysisItem)
         menu.addItem(withTitle: AppStrings.t("Preferências…", "Preferences…"), action: #selector(preferences), keyEquivalent: ","); menu.items.last?.target = self
         menu.addItem(withTitle: AppStrings.t("Sair", "Quit"), action: #selector(quit), keyEquivalent: "q"); menu.items.last?.target = self
         statusItem.menu = menu
@@ -262,6 +285,18 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         refreshProfileMetadata()
     }
 
+    @objc private func openAnalysis() {
+        let profiles = (try? store.list()) ?? []
+        if analysisWindowController == nil {
+            analysisWindowController = AnalysisWindowController(profiles: profiles, isRefreshing: isRefreshingUsage, onRefresh: { [weak self] in self?.refreshProfileMetadata() })
+        } else {
+            analysisWindowController?.update(profiles: profiles, isRefreshing: isRefreshingUsage)
+        }
+        analysisWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        refreshProfileMetadata()
+    }
+
     @objc private func migrateExisting() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         do {
@@ -324,6 +359,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let activeID = try? store.active()?.id
         preferencesWindowController?.update(profiles: profiles, activeID: activeID, paseoDetected: paseo.isDetected(), paseoConfigured: paseo.isConfigured())
         usageWindowController?.update(profiles: profiles, activeID: activeID, isRefreshing: isRefreshingUsage)
+        analysisWindowController?.update(profiles: profiles, isRefreshing: isRefreshingUsage)
     }
 
     private func refreshProfileMetadata() {
