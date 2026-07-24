@@ -8,6 +8,7 @@ let package = Package(
     targets: [
         .target(name: "ClaudeAccountSwitcherCore", path: "Sources/ClaudeAccountSwitcherCore"),
         .executableTarget(name: "ClaudeAccountSwitcherApp", dependencies: ["ClaudeAccountSwitcherCore"], path: "Sources/ClaudeAccountSwitcherApp", resources: [.copy("../../Resources")]),
+        .executableTarget(name: "cas", dependencies: ["ClaudeAccountSwitcherCore"], path: "Sources/CAS"),
         .executableTarget(name: "ClaudeAccountSwitcherTests", dependencies: ["ClaudeAccountSwitcherCore"], path: "Tests/ClaudeAccountSwitcherTests")
     ]
 )

@@ -49,6 +49,15 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     /// Apresenta um alerta nativo com diagnóstico quando o armazenamento de perfis não
     /// pode ser inicializado e encerra a app de forma controlada (nunca retorna).
+    /// O binário `cas` é empacotado como irmão do executável da app em `Contents/MacOS/`
+    /// (ver Scripts/build-app.sh), e em desenvolvimento fica ao lado dele em `.build/<config>/`.
+    /// Só retorna o caminho se o arquivo existir, para não instalar um symlink quebrado.
+    private static func bundledCASBinary() -> URL? {
+        guard let executable = Bundle.main.executableURL else { return nil }
+        let cas = executable.deletingLastPathComponent().appendingPathComponent("cas")
+        return FileManager.default.fileExists(atPath: cas.path) ? cas : nil
+    }
+
     private static func presentStartupFailure(root: URL, error: Error) -> Never {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
@@ -80,7 +89,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         usageRefreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshProfileMetadata() }
         }
-        if let official = try? locator.locate() { try? shell.install(home: FileManager.default.homeDirectoryForCurrentUser, officialBinary: official) }
+        if let official = try? locator.locate() { try? shell.install(home: FileManager.default.homeDirectoryForCurrentUser, officialBinary: official, casBinary: MenuBarController.bundledCASBinary()) }
         if let active = try? store.active() { try? SystemLaunchdEnvironment().set(active.directory.path); try? paseo.updateSymlink(to: active.directory) }
         try? loginItem.setEnabled(true)
     }
