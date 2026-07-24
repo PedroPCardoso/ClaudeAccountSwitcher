@@ -6,6 +6,11 @@ enum AppPreferences {
     /// When enabled, switching accounts quits and relaunches the native desktop app for the
     /// chosen profile. Disabled by default so a switch does not disrupt an open desktop app.
     static let relaunchDesktopOnSwitch = "relaunchDesktopOnSwitch"
+
+    /// When enabled, the menu bar item shows the active account's 5-hour usage percentage next
+    /// to the icon, coloured by tier. Enabled by default. Registered with a `true` fallback so
+    /// an unset value reads as on.
+    static let showUsageInMenuBar = "showUsageInMenuBar"
 }
 
 @MainActor
@@ -67,6 +72,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        UserDefaults.standard.register(defaults: [AppPreferences.showUsageInMenuBar: true])
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let logoURL = Bundle.main.url(forResource: "claude-account-switcher-logo", withExtension: "png"), let logo = NSImage(contentsOf: logoURL) {
             logo.size = NSSize(width: 18, height: 18)
@@ -79,6 +85,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         installShortcutMonitor(); rebuildMenu(); refreshProfileMetadata()
         usageRefreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshProfileMetadata() }
+        }
+        // Reflete a mudança do toggle "mostrar uso na barra" imediatamente, sem esperar o
+        // próximo refresh de 60s.
+        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.updateStatusItemUsage() }
         }
         if let official = try? locator.locate() { try? shell.install(home: FileManager.default.homeDirectoryForCurrentUser, officialBinary: official) }
         if let active = try? store.active() { try? SystemLaunchdEnvironment().set(active.directory.path); try? paseo.updateSymlink(to: active.directory) }
@@ -113,6 +124,40 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: AppStrings.t("Preferências…", "Preferences…"), action: #selector(preferences), keyEquivalent: ","); menu.items.last?.target = self
         menu.addItem(withTitle: AppStrings.t("Sair", "Quit"), action: #selector(quit), keyEquivalent: "q"); menu.items.last?.target = self
         statusItem.menu = menu
+        updateStatusItemUsage()
+    }
+
+    /// Compõe o botão do status item: imagem sempre; e, quando o toggle está ligado e a conta
+    /// ativa tem cota de 5h, um título curto ("72%") colorido por faixa (`UsageTier`). Sem conta
+    /// ativa / sem usage / sem cota de 5h / toggle desligado → só o ícone.
+    private func updateStatusItemUsage() {
+        guard let button = statusItem?.button else { return }
+        func showIconOnly() {
+            button.attributedTitle = NSAttributedString(string: "")
+            button.title = ""
+            statusItem.length = NSStatusItem.squareLength
+        }
+        guard UserDefaults.standard.bool(forKey: AppPreferences.showUsageInMenuBar) else { showIconOnly(); return }
+        let profiles = (try? store.list()) ?? []
+        let activeID = try? store.active()?.id
+        let activeUsage = profiles.first(where: { $0.id == activeID })?.usage
+        guard let label = StatusBarUsage.label(activeUsage: activeUsage),
+              let quota = activeUsage?.quotas.first(where: { $0.kind == .fiveHour }) else { showIconOnly(); return }
+        button.imagePosition = .imageLeft
+        button.attributedTitle = NSAttributedString(string: " " + label, attributes: [
+            .foregroundColor: statusColor(for: UsageTier.forPercent(quota.usedPercent)),
+            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        ])
+        statusItem.length = NSStatusItem.variableLength
+    }
+
+    /// Cor por faixa de uso na barra de menu: verde < 70, laranja 70–89, vermelho >= 90.
+    private func statusColor(for tier: UsageTier) -> NSColor {
+        switch tier {
+        case .ok: return .systemGreen
+        case .warning: return .systemOrange
+        case .critical: return .systemRed
+        }
     }
 
     private var relaunchDesktopOnSwitch: Bool { UserDefaults.standard.bool(forKey: AppPreferences.relaunchDesktopOnSwitch) }

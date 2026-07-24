@@ -20,6 +20,7 @@ struct PreferencesView: View {
     @AppStorage(FiveHourAlertSound.defaultsKey) private var fiveHourSoundRaw: String = FiveHourAlertSound.default.rawValue
     @AppStorage(WeeklyCreditsAlertThreshold.defaultsKey) private var weeklyCreditsThreshold: Double = WeeklyCreditsAlertThreshold.default
     @AppStorage(AppPreferences.relaunchDesktopOnSwitch) private var relaunchDesktopOnSwitch: Bool = false
+    @AppStorage(AppPreferences.showUsageInMenuBar) private var showUsageInMenuBar: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -61,6 +62,10 @@ struct PreferencesView: View {
                 }
                 Spacer()
             }
+            Toggle(isOn: $showUsageInMenuBar) {
+                Text(AppStrings.t("Mostrar % da janela de 5h da conta ativa na barra de menu", "Show the active account's 5-hour usage % in the menu bar"))
+            }
+            .help(AppStrings.t("Exibe o percentual usado ao lado do ícone, colorido por faixa (verde/laranja/vermelho).", "Shows the used percentage next to the icon, coloured by tier (green/orange/red)."))
             Toggle(isOn: $relaunchDesktopOnSwitch) {
                 Text(AppStrings.t("Reabrir o app nativo do Claude ao trocar de conta", "Reopen the native Claude app when switching accounts"))
             }
