@@ -80,6 +80,18 @@ enum ProfileStoreTests {
             ,("activation updates the paseo symlink alongside launchd", testActivationUpdatesPaseoSymlink)
             ,("usage tier maps percent to the same thresholds as the usage view", testUsageTierForPercent)
             ,("status bar label reads the five-hour quota by stable kind", testStatusBarUsageLabel)
+            ,("cursor period usage parses cents, millis dates, and computed percent", testCursorParsePeriodUsage)
+            ,("cursor aggregated usage parses string token fields per model", testCursorParseAggregated)
+            ,("cursor daily spend parses series sorted by day", testCursorParseDaily)
+            ,("cursor model family classifies claude/gpt/composer/gemini/grok/other", testCursorModelFamilyClassify)
+            ,("cursor fetch degrades gracefully when aggregate fails", testCursorFetchDegradesOnAggregateFailure)
+            ,("cursor fetch does not retry on 401", testCursorFetchDoesNotRetryUnauthorized)
+            ,("cursor fetch retries on 503", testCursorFetchRetriesOnServerError)
+            ,("cursor budget alert fires once per cycle and rearms on new cycle", testCursorBudgetAlertTracker)
+            ,("cursor budget threshold falls back to default when invalid", testCursorBudgetAlertThreshold)
+            ,("status bar segments honor source off/claude/cursor/both", testStatusBarUsageSegments)
+            ,("status bar source migrates legacy showUsageInMenuBar Bool", testStatusBarUsageSourceMigration)
+            ,("cursor usage store round-trips a snapshot", testCursorUsageStoreRoundTrip)
             ,("cas resolves a profile by exact name, by email, not found, and ambiguous", testCASProfileResolver)
             ,("cas parses list/current/switch and rejects unknown or missing args", testCASParser)
             ,("cas switch activates the resolved profile and pushes its directory to launchd", testCASSwitchActivatesResolvedProfile)
@@ -256,6 +268,209 @@ enum ProfileStoreTests {
         try check(StatusBarUsage.label(activeUsage: fiveHour) == "72%", "71.6% should round to 72%")
         let weeklyOnly = ClaudeUsageSnapshot(quotas: [ClaudeQuota(kind: .sevenDay, key: "Semanal", usedPercent: 40)], source: "test")
         try check(StatusBarUsage.label(activeUsage: weeklyOnly) == nil, "a snapshot without a five-hour quota should produce no label")
+    }
+
+    // MARK: - Cursor usage monitoring
+
+    private static let fakeCursorCredentials = CursorCredentials(
+        accessToken: "fake.jwt.token",
+        email: "user@example.com",
+        membershipType: "pro")
+
+    private static func cursorHTTPResponse(_ status: Int, method: String = "GetCurrentPeriodUsage") -> HTTPURLResponse {
+        HTTPURLResponse(
+            url: URL(string: "https://api2.cursor.sh/aiserver.v1.DashboardService/\(method)")!,
+            statusCode: status, httpVersion: nil, headerFields: nil)!
+    }
+
+    private static func periodUsageJSON(spend: Int = 288, limit: Int = 2000, autoPercentUsed: Double = 0.83) -> Data {
+        Data("""
+        {"billingCycleStart":"1784996555000","billingCycleEnd":"1787674955000",
+         "planUsage":{"totalSpend":\(spend),"includedSpend":\(spend),"remaining":\(limit - spend),"limit":\(limit),
+           "autoPercentUsed":\(autoPercentUsed),"apiPercentUsed":5.0,"totalPercentUsed":2.5}}
+        """.utf8)
+    }
+
+    private static func aggregatedJSON() -> Data {
+        Data("""
+        {"aggregations":[
+          {"modelIntent":"claude-opus-5-thinking-high","inputTokens":"54","outputTokens":"24341",
+           "cacheWriteTokens":"164315","cacheReadTokens":"1939091","totalCents":260.53},
+          {"modelIntent":"gpt-5.3-codex","inputTokens":"100","outputTokens":"200",
+           "cacheWriteTokens":"0","cacheReadTokens":"50","totalCents":1.5}
+        ]}
+        """.utf8)
+    }
+
+    private static func dailyJSON() -> Data {
+        Data("""
+        {"dailySpend":[
+          {"day":"1785024000000","category":"composer-2.5-fast","spendCents":50,"totalTokens":"1000"},
+          {"day":"1784937600000","category":"claude-opus-5-thinking-high","spendCents":261,"totalTokens":"2127801"}
+        ]}
+        """.utf8)
+    }
+
+    static func testCursorParsePeriodUsage() throws {
+        let plan = CursorUsageService.parsePeriodUsage(periodUsageJSON())!
+        try check(plan.totalSpendCents == 288, "spend should be 288 cents")
+        try check(plan.limitCents == 2000, "limit should be 2000 cents")
+        try check(abs(plan.usedPercent - 14.4) < 0.01, "usedPercent should be spend/limit*100=14.4, got \(plan.usedPercent)")
+        // Página "Included in Pro": Cursor Models = autoPercentUsed, Other Models = apiPercentUsed.
+        try check(plan.cursorModelsPercent == 0.83, "autoPercentUsed should map to the Cursor Models bar")
+        try check(plan.otherModelsPercent == 5.0, "apiPercentUsed should map to the Other Models bar")
+        try check(plan.dashboardUsedPercent == 5.0, "dashboardUsedPercent is max of the two bars")
+        try check(plan.billingCycleStart.timeIntervalSince1970 == 1_784_996_555, "start ms mismatch")
+        try check(plan.billingCycleEnd.timeIntervalSince1970 == 1_787_674_955, "end ms mismatch")
+    }
+
+    static func testCursorParseAggregated() throws {
+        let models = CursorUsageService.parseAggregated(aggregatedJSON())
+        try check(models.count == 2, "expected 2 models")
+        let claude = models.first { $0.modelIntent.hasPrefix("claude") }!
+        try check(claude.input == 54 && claude.output == 24341, "string token fields should parse as Int")
+        try check(claude.cacheWrite == 164315 && claude.cacheRead == 1_939_091, "cache tokens mismatch")
+        try check(abs(claude.costCents - 260.53) < 0.01, "cost cents mismatch")
+    }
+
+    static func testCursorParseDaily() throws {
+        let daily = CursorUsageService.parseDaily(dailyJSON())
+        try check(daily.count == 2, "expected 2 daily rows")
+        try check(daily[0].day < daily[1].day, "daily should be sorted ascending by day")
+        try check(daily[0].modelIntent.hasPrefix("claude"), "first day should be the earlier claude row")
+        try check(daily[0].totalTokens == 2_127_801, "totalTokens as string should parse")
+    }
+
+    static func testCursorModelFamilyClassify() throws {
+        try check(CursorModelFamily.classify("claude-opus-5-thinking-high") == .claude, "claude")
+        try check(CursorModelFamily.classify("gpt-5.3-codex") == .gpt, "gpt")
+        try check(CursorModelFamily.classify("composer-2.5-fast") == .composer, "composer")
+        try check(CursorModelFamily.classify("default") == .composer, "default → composer")
+        try check(CursorModelFamily.classify("gemini-2.5-pro") == .gemini, "gemini")
+        try check(CursorModelFamily.classify("grok-4.5") == .grok, "grok")
+        try check(CursorModelFamily.classify("mystery-model") == .other, "unknown")
+    }
+
+    static func testCursorFetchDegradesOnAggregateFailure() async throws {
+        let counter = CallCounter()
+        let service = CursorUsageService(
+            retry: UsageRetryPolicy(maxAttempts: 1, baseDelay: 0),
+            transport: { request in
+                _ = counter.increment()
+                let path = request.url?.lastPathComponent ?? ""
+                if path == "GetCurrentPeriodUsage" {
+                    return (periodUsageJSON(), cursorHTTPResponse(200, method: path))
+                }
+                // Aggregate and daily fail — snapshot should still have planUsage.
+                return (Data(), cursorHTTPResponse(500, method: path))
+            },
+            credentialProvider: { fakeCursorCredentials })
+        let snapshot = try await service.fetch()
+        try check(snapshot.planUsage != nil, "planUsage must survive aggregate failure")
+        try check(abs((snapshot.planUsage?.usedPercent ?? 0) - 14.4) < 0.01, "percent mismatch")
+        try check(snapshot.models.isEmpty, "models should be empty on aggregate failure")
+        try check(snapshot.daily.isEmpty, "daily should be empty on daily failure")
+        try check(snapshot.email == "user@example.com", "email from credentials")
+        try check(snapshot.plan == "pro", "plan from credentials")
+    }
+
+    static func testCursorFetchDoesNotRetryUnauthorized() async throws {
+        let counter = CallCounter()
+        let service = CursorUsageService(
+            retry: UsageRetryPolicy(maxAttempts: 5, baseDelay: 0),
+            transport: { _ in _ = counter.increment(); return (Data(), cursorHTTPResponse(401)) },
+            credentialProvider: { fakeCursorCredentials })
+        do {
+            _ = try await service.fetch()
+            try check(false, "expected unauthorized to throw")
+        } catch CursorUsageError.unauthorized {
+            try check(counter.count == 1, "401 must not be retried, got \(counter.count)")
+        }
+    }
+
+    static func testCursorFetchRetriesOnServerError() async throws {
+        let counter = CallCounter()
+        let service = CursorUsageService(
+            retry: UsageRetryPolicy(maxAttempts: 3, baseDelay: 0),
+            transport: { request in
+                let attempt = counter.increment()
+                let path = request.url?.lastPathComponent ?? ""
+                if path == "GetCurrentPeriodUsage" {
+                    if attempt < 3 { return (Data(), cursorHTTPResponse(503, method: path)) }
+                    return (periodUsageJSON(), cursorHTTPResponse(200, method: path))
+                }
+                // After period succeeds, aggregate/daily get empty success bodies.
+                return (Data(#"{}"#.utf8), cursorHTTPResponse(200, method: path))
+            },
+            credentialProvider: { fakeCursorCredentials })
+        let snapshot = try await service.fetch()
+        try check(snapshot.planUsage != nil, "should succeed after retries")
+        try check(counter.count >= 3, "expected at least 3 period attempts, got \(counter.count)")
+    }
+
+    static func testCursorBudgetAlertTracker() throws {
+        var tracker = CursorBudgetAlertTracker()
+        let cycle1 = Date(timeIntervalSince1970: 1_800_000_000)
+        let cycle2 = Date(timeIntervalSince1970: 1_810_000_000)
+        try check(tracker.evaluate(usedPercent: 50, threshold: 80, billingCycleEnd: cycle1) == false, "below threshold")
+        try check(tracker.evaluate(usedPercent: 80, threshold: 80, billingCycleEnd: cycle1) == true, "first crossing")
+        try check(tracker.evaluate(usedPercent: 90, threshold: 80, billingCycleEnd: cycle1) == false, "same cycle no re-fire")
+        try check(tracker.evaluate(usedPercent: 85, threshold: 80, billingCycleEnd: cycle2) == true, "new cycle rearms")
+        try check(tracker.evaluate(usedPercent: 50, threshold: 80, billingCycleEnd: nil) == false, "nil cycle end")
+    }
+
+    static func testCursorBudgetAlertThreshold() throws {
+        try check(CursorBudgetAlertThreshold.resolve(80) == 80, "valid")
+        try check(CursorBudgetAlertThreshold.resolve(0) == CursorBudgetAlertThreshold.default, "zero → default")
+        try check(CursorBudgetAlertThreshold.resolve(-1) == CursorBudgetAlertThreshold.default, "negative → default")
+        try check(CursorBudgetAlertThreshold.resolve(101) == CursorBudgetAlertThreshold.default, "over 100 → default")
+    }
+
+    static func testStatusBarUsageSegments() throws {
+        let claude = ClaudeUsageSnapshot(quotas: [ClaudeQuota(kind: .fiveHour, key: "Janela 5h", usedPercent: 72)], source: "t")
+        let cursor = CursorUsageSnapshot(planUsage: CursorPlanUsage(
+            totalSpendCents: 288, includedSpendCents: 288, limitCents: 2000, remainingCents: 1712,
+            billingCycleStart: .distantPast, billingCycleEnd: .distantFuture,
+            cursorModelsPercent: 1.0, otherModelsPercent: 19.4))
+        try check(StatusBarUsage.segments(source: .off, activeClaude: claude, cursor: cursor).isEmpty, "off → empty")
+        let cOnly = StatusBarUsage.segments(source: .claude, activeClaude: claude, cursor: cursor)
+        try check(cOnly.count == 1 && cOnly[0].text == "72%", "claude only")
+        let uOnly = StatusBarUsage.segments(source: .cursor, activeClaude: claude, cursor: cursor)
+        try check(uOnly.count == 1 && uOnly[0].text == "19%", "cursor badge uses max dashboard bar (19), not spend/limit")
+        let both = StatusBarUsage.segments(source: .both, activeClaude: claude, cursor: cursor)
+        try check(both.count == 2 && both[0].text == "C 72%" && both[1].text == "⌘ 19%", "both segments")
+    }
+
+    static func testStatusBarUsageSourceMigration() throws {
+        let suite = "cas-test-statusbar-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: StatusBarUsageSource.legacyDefaultsKey)
+        let migrated = StatusBarUsageSource.resolve(defaults)
+        try check(migrated == .claude, "true legacy → claude")
+        try check(defaults.string(forKey: StatusBarUsageSource.defaultsKey) == "claude", "should persist migration")
+        // Second read uses the new key.
+        defaults.set(false, forKey: StatusBarUsageSource.legacyDefaultsKey)
+        try check(StatusBarUsageSource.resolve(defaults) == .claude, "new key wins over legacy")
+    }
+
+    static func testCursorUsageStoreRoundTrip() throws {
+        let store = try CursorUsageStore(root: try temporaryRoot())
+        try check(try store.load() == nil, "empty store")
+        let snapshot = CursorUsageSnapshot(
+            email: "a@b.com",
+            plan: "pro",
+            planUsage: CursorPlanUsage(
+                totalSpendCents: 100, includedSpendCents: 100, limitCents: 2000, remainingCents: 1900,
+                billingCycleStart: Date(timeIntervalSince1970: 1_000),
+                billingCycleEnd: Date(timeIntervalSince1970: 2_000)),
+            models: [CursorModelUsage(modelIntent: "gpt-5", input: 1, output: 2, cacheWrite: 0, cacheRead: 0, costCents: 0.5)],
+            daily: [CursorDailySpend(day: Date(timeIntervalSince1970: 1_500), modelIntent: "gpt-5", spendCents: 0.5, totalTokens: 3)])
+        try store.save(snapshot)
+        let loaded = try store.load()!
+        try check(loaded.email == "a@b.com" && loaded.plan == "pro", "identity")
+        try check(loaded.models.count == 1 && loaded.daily.count == 1, "collections")
+        try check(loaded.planUsage?.totalSpendCents == 100, "plan usage")
     }
 
     static func temporaryRoot() throws -> URL {

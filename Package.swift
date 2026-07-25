@@ -6,7 +6,10 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [.executable(name: "ClaudeAccountSwitcher", targets: ["ClaudeAccountSwitcherApp"])],
     targets: [
-        .target(name: "ClaudeAccountSwitcherCore", path: "Sources/ClaudeAccountSwitcherCore"),
+        .target(
+            name: "ClaudeAccountSwitcherCore",
+            path: "Sources/ClaudeAccountSwitcherCore",
+            linkerSettings: [.linkedLibrary("sqlite3")]),
         .executableTarget(name: "ClaudeAccountSwitcherApp", dependencies: ["ClaudeAccountSwitcherCore"], path: "Sources/ClaudeAccountSwitcherApp", resources: [.copy("../../Resources")]),
         .executableTarget(name: "cas", dependencies: ["ClaudeAccountSwitcherCore"], path: "Sources/CAS"),
         .executableTarget(name: "ClaudeAccountSwitcherTests", dependencies: ["ClaudeAccountSwitcherCore"], path: "Tests/ClaudeAccountSwitcherTests")

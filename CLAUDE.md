@@ -21,12 +21,19 @@ Componentes de produto (ver specs para detalhes de design):
 - Uso/cotas: `ClaudeUsageService` lê o endpoint OAuth de consumo (`/api/oauth/usage`, mesmo usado
   pelo 9router, não é API pública documentada) — expõe quotas "Janela 5h", "Semanal" e
   "Semanal <Modelo>" (`seven_day_<modelo>`), mais soma de tokens locais das sessões.
+- **Uso do Cursor (monitoramento):** `CursorUsageService` consulta a API interna
+  `api2.cursor.sh/aiserver.v1.DashboardService` (Bearer do `state.vscdb`) — custo/limite do ciclo,
+  tokens+custo por modelo (Claude/GPT/Gemini/Grok/Composer), histórico diário e data de reset.
+  Sem troca de contas (sessão única). Spec:
+  `docs/superpowers/specs/2026-07-25-cursor-usage-monitoring-design.md`.
 - Alerta de 5h: `FiveHourAlertTracker` dispara notificação nativa uma vez por cruzamento de limiar
   (default 80%) da janela de 5h da conta ativa.
 - Alerta de créditos semanais: `WeeklyCreditsAlertTracker` dispara quando restam ≥ threshold% de
   crédito e o reset semanal está a ≤24h. Avalia **todos** os perfis (não só o ativo) a cada
   refresh; se múltiplos perfis disparam no mesmo ciclo, agrupa numa única notificação. Reusa o som
   configurado para o alerta de 5h (`fiveHourAlertSoundName`).
+- Alerta de orçamento do Cursor: `CursorBudgetAlertTracker` dispara 1× por ciclo de faturamento
+  quando o % usado (spend/limit) cruza o limiar (default 80%). Reusa o som do alerta de 5h.
 - Integração opcional com Paseo: `PaseoIntegration` mantém um symlink estável apontando para o
   diretório de config do perfil ativo, porque o daemon do Paseo resolve `CLAUDE_CONFIG_DIR` uma
   vez no spawn e nunca relê `launchctl setenv`.
@@ -62,7 +69,16 @@ Caminho base: raiz do repositório.
 - `UsageTier.swift` — enum puro `UsageTier { ok, warning, critical }` + `forPercent(_:)` (limiares
   70/90) para colorir o % da barra de menu (feature 1.3.5, issue #33).
 - `StatusBarUsage.swift` — `label(activeUsage:)` monta o `"NN%"` da barra de menu casando a cota
-  pela identidade estável `QuotaKind.fiveHour` (issue #33).
+  pela identidade estável `QuotaKind.fiveHour` (issue #33); `StatusBarUsageSource`
+  (`off|claude|cursor|both`) + `segments(...)` para Claude e/ou Cursor; migra o Bool legado
+  `showUsageInMenuBar`.
+- `CursorUsage.swift` — `CursorPlanUsage` (ciclo, spend/limit em centavos; barras
+ `cursorModelsPercent`=`autoPercentUsed` e `otherModelsPercent`=`apiPercentUsed`, iguais à
+ página Included in Pro; `dashboardUsedPercent` = max das duas para badge/alerta —
+ **não** usar `totalSpend/limit` nem `totalPercentUsed` como cota incluída),
+  `CursorModelUsage`, `CursorModelFamily.classify`, `CursorDailySpend`, `CursorUsageSnapshot`.
+- `CursorAlert.swift` — `CursorBudgetAlertTracker` (1× por `billingCycleEnd`),
+  `CursorBudgetAlertThreshold` (default 80), `CursorMonitoring` (toggle).
 - `UsageHistory.swift` — `TokenBreakdown` (tokens por tipo: input/output/cacheRead/cache 1h/5m),
   `DailyTokenUsage` (quebra + custo USD por perfil no dia; `perProfile`/`total` são computados do
   breakdown p/ compat), `PlanRecommendation` (+ `evaluate`) e `AnalysisSelection` (seleção de
@@ -89,6 +105,12 @@ Caminho base: raiz do repositório.
   `seven_day_<modelo>`; parsing de `resets_at` com timestamps ISO8601 fracionários. `tokenUsage`
   soma os `.jsonl` locais deduplicando por `message.id:requestId` (chunks de streaming repetidos;
   `messageCount` conta mensagens, não linhas — 1.3.6).
+- `CursorCredentialStore.swift` — lê `cursorAuth/accessToken` (e e-mail/plano) do
+  `state.vscdb` do Cursor via SQLite3 read-only; cache em memória; checa `exp` do JWT.
+- `CursorUsageService.swift` — 3 RPCs Connect em `api2.cursor.sh` (`GetCurrentPeriodUsage`,
+  `GetAggregatedUsageEvents`, `GetDailySpendByCategory`); degradação graciosa se agregado/diário
+  falharem; reusa `UsageTransport`/`UsageRetryPolicy`.
+- `CursorUsageStore.swift` — snapshot atômico em `cursor-usage.json` no root do app.
 - `UsageHistoryService.swift` — parseia os `.jsonl` de sessão em séries diárias por perfil, com a
   quebra por tipo de token e o custo USD estimado (`ModelPricing`). Deduplica cada
   `message.id:requestId` uma vez, dentro do arquivo E entre arquivos da conta (sessões retomadas);
@@ -114,15 +136,11 @@ Caminho base: raiz do repositório.
 - `AppStrings.swift` — helper de i18n: `AppStrings.t(pt, en)` retorna a string pt-BR ou en-US
   conforme `Locale.current.language.languageCode == "pt"`. **Convenção obrigatória para toda
   string visível ao usuário** — nunca hardcode texto de UI em um só idioma.
-- `MenuBarController.swift` (maior arquivo do target, ~440 linhas) — `NSApplicationDelegate`
-  principal: monta `NSStatusItem`, monitora atalho global (`NSEvent.addGlobalMonitorForEvents`),
-  lê preferências de `UserDefaults`, dispara alertas de 5h/semanal, coordena `ProfileStore`,
-  `ActivationService`, `ClaudeAuthService`, `ClaudeUsageService`, `MigrationService`,
-  `ShellIntegrationManager`. Define `AppPreferences` (namespace de chaves de defaults do app,
-  atualmente só `relaunchDesktopOnSwitch`).
-- `PreferencesView.swift` (~200 linhas) — SwiftUI da janela de Preferências: lista de perfis e
-  ações (ativar, renomear, remover, relogin, importar, migrar, integrar Paseo), sliders/pickers de
-  threshold e som de alerta via `@AppStorage`.
+- `MenuBarController.swift` — `NSApplicationDelegate` principal: monta `NSStatusItem`, monitora
+  atalho global, lê preferências, dispara alertas de 5h/semanal/Cursor, coordena stores e
+  services Claude + Cursor, refresh a cada 60s.
+- `PreferencesView.swift` — SwiftUI das Preferências: perfis Claude, alertas, fonte do % na barra
+  (`StatusBarUsageSource`), seção Cursor (toggle + threshold + status da credencial).
 - `PreferencesWindowController.swift` — `NSWindowController` que hospeda `PreferencesView` via
   `NSHostingView`.
 - `QuickSwitcher.swift` — SwiftUI compacto (popover) para busca/troca rápida de perfil por
@@ -133,6 +151,10 @@ Caminho base: raiz do repositório.
 - `AnalysisView.swift` / `AnalysisWindowController.swift` — janela "Análise de uso": gráfico
   empilhado por conta (Swift Charts), toggles de seleção de perfis e card de recomendação Max vs
   Pro; lê/grava `AppPreferences.analysisSelectedProfileIDs` (feature 1.3.5, issue #34).
+- `CursorUsageView.swift` / `CursorUsageWindowController.swift` — janela "Uso do Cursor": card do
+  ciclo, resumo por provedor, tabela por modelo.
+- `CursorAnalysisView.swift` / `CursorAnalysisWindowController.swift` — gráfico diário empilhado
+  por modelo (Swift Charts), toggles por família.
 
 ### `Sources/CAS/` (executável `cas`, CLI)
 - `main.swift` — companheiro de linha de comando `cas` (`list`/`current`/`switch <nome|email>`),
@@ -198,7 +220,7 @@ Vivem em `docs/superpowers/`:
 - `docs/superpowers/specs/` — specs aprovadas, formato de nome
   `YYYY-MM-DD-<topico>-design.md`. Confirmados: `2026-07-19-claude-account-switcher-design.md`,
   `2026-07-20-five-hour-usage-alert-design.md`, `2026-07-20-native-app-profile-sync-design.md`,
-  `2026-07-21-weekly-credits-alert-design.md`.
+  `2026-07-21-weekly-credits-alert-design.md`, `2026-07-25-cursor-usage-monitoring-design.md`.
 - `docs/superpowers/plans/` — planos de implementação task-by-task, formato de nome
   `YYYY-MM-DD-<topico>.md` (sem sufixo `-design`). Confirmados:
   `2026-07-20-native-app-profile-sync.md`, `2026-07-21-weekly-credits-alert.md`.
@@ -215,11 +237,14 @@ Todas em `UserDefaults.standard`, sem suíte/domínio customizado:
 | Chave | Definida em | Tipo | Default | Uso |
 |---|---|---|---|---|
 | `fiveHourAlertThreshold` | `FiveHourAlertThreshold.defaultsKey` (Domain/FiveHourAlert.swift) | Double | 80 | Limiar (%) de disparo do alerta de janela de 5h. `FiveHourAlertThreshold.resolve()` cai para o default se fora de `(0, 100]`. |
-| `fiveHourAlertSoundName` | `FiveHourAlertSound.defaultsKey` (Domain/FiveHourAlert.swift) | String (raw value do enum) | `standard` | Som do alerta de 5h. Valores: `none, standard, basso, glass, hero, ping, sosumi`. |
+| `fiveHourAlertSoundName` | `FiveHourAlertSound.defaultsKey` (Domain/FiveHourAlert.swift) | String (raw value do enum) | `standard` | Som do alerta de 5h (também reusado pelos alertas semanal e Cursor). Valores: `none, standard, basso, glass, hero, ping, sosumi`. |
 | `relaunchDesktopOnSwitch` | `AppPreferences.relaunchDesktopOnSwitch` (App/MenuBarController.swift) | Bool | `false` | Se `true`, trocar de conta encerra e relança o app desktop nativo do Claude. |
 | `weeklyCreditsAlertThreshold` | `WeeklyCreditsAlertThreshold.defaultsKey` (Domain/FiveHourAlert.swift) | Double | 30 | Limiar (%) de crédito disponível para disparar o alerta semanal, dentro da janela de 24h antes do reset. |
-| `showUsageInMenuBar` | `AppPreferences.showUsageInMenuBar` (App/MenuBarController.swift) | Bool | `true` (registrado) | Se `true`, mostra o % da janela de 5h da conta ativa ao lado do ícone da barra de menu, colorido por faixa. |
+| `statusBarUsageSource` | `StatusBarUsageSource.defaultsKey` (Domain/StatusBarUsage.swift) | String | `off` | `off\|claude\|cursor\|both`. Migra o Bool legado `showUsageInMenuBar` (`true`→`claude`) na primeira leitura. |
+| `showUsageInMenuBar` | legado | Bool | — | Substituído por `statusBarUsageSource`; ainda lido só para migração. |
 | `analysisSelectedProfileIDs` | `AppPreferences.analysisSelectedProfileIDs` (App/MenuBarController.swift) | [String] (UUIDs) | ausente = todos | Perfis incluídos na análise de uso agregado. Ausência da chave = todos selecionados. Lógica pura em `AnalysisSelection` (Domain/UsageHistory.swift). |
+| `cursorMonitoringEnabled` | `CursorMonitoring.defaultsKey` (Domain/CursorAlert.swift) | Bool | `true` (ausente = on) | Liga/desliga o fetch periódico de uso do Cursor. |
+| `cursorBudgetAlertThreshold` | `CursorBudgetAlertThreshold.defaultsKey` (Domain/CursorAlert.swift) | Double | 80 | Limiar (%) do ciclo de faturamento do Cursor para o alerta de orçamento. |
 
 ## Coisas a confirmar de novo em sessões futuras (podem mudar)
 

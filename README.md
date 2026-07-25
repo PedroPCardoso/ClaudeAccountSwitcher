@@ -8,6 +8,11 @@ Current release: **1.3.6**. The distributed DMG contains a universal Apple Silic
 
 Direct download: [Claude-Account-Switcher-1.3.6.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.3.6.dmg)
 
+### Unreleased
+
+- **Cursor usage monitoring.** The menu bar app now tracks the signed-in Cursor IDE account alongside Claude: billing-cycle cost and plan limit, used percent, reset date, and tokens/cost per model (Claude, GPT, Gemini, Grok, Composer). New windows **View Cursor usage…** and **Analyze Cursor usage…**, a configurable budget alert (default 80% of the cycle), and a Preferences picker for what the menu-bar badge shows (`off` / Claude / Cursor / both). Data comes from Cursor's internal Dashboard API via the session token in `state.vscdb` — there is no local token log and no account switching for Cursor (single session).
+- **Cursor usage mirrors the Included in Pro bars.** The Cursor Settings page shows two bars only — **Cursor Models** (`autoPercentUsed`) and **Other Models** (`apiPercentUsed`). The app matches those. The API's `totalSpend / limit` figure (~50%+) and `totalPercentUsed` (~3%) are *not* what that page displays and are not used as the included-quota percentage. Menu-bar badge and budget alert use the higher of the two bars.
+
 ### What's new in 1.3.6
 
 - **Accurate token counting (deduplication).** Claude Code writes several streaming chunks per assistant message, all sharing the same `message.id` + `requestId` with identical usage. The token totals now count each message once (in-file and across a resumed session's files), matching how tools like CodexBar/`ccusage` read the logs. On real histories this was roughly halving an otherwise ~2x inflated total.

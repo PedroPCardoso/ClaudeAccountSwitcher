@@ -259,7 +259,7 @@
   }
   .section-head p{margin-top:14px; color:var(--text-dim); font-size:1.02rem; line-height:1.6;}
 
-  .grid3{display:grid; grid-template-columns:repeat(3, 1fr); gap:1px; background:var(--border); border:1px solid var(--border); border-radius:16px; overflow:hidden;}
+  .grid3{display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:1px; background:var(--border); border:1px solid var(--border); border-radius:16px; overflow:hidden;}
   .card{background:var(--bg-elev); padding:30px 26px;}
   .card .icon{
     width:36px; height:36px; border-radius:9px;
@@ -459,6 +459,11 @@
         <div class="icon" style="background:rgba(53,214,196,0.15); color:var(--teal);">◒</div>
         <h3>Plugins e MCPs</h3>
         <p>Servidores MCP e plugins instalados ficam por perfil, então a conta do cliente não herda os MCPs internos da empresa.</p>
+      </div>
+      <div class="card">
+        <div class="icon" style="background:rgba(255,184,77,0.15); color:#ffb84d;">⌘</div>
+        <h3>Uso do Cursor</h3>
+        <p>Monitora a conta logada no Cursor IDE: custo e limite do ciclo, tokens por modelo (Claude, GPT, Composer…), data de reset e alerta de orçamento — sem trocar de conta.</p>
       </div>
     </div>
   </section>

@@ -6,6 +6,7 @@ struct PreferencesView: View {
     let activeID: UUID?
     let paseoDetected: Bool
     let paseoConfigured: Bool
+    let cursorStatus: String
     let onActivate: (Profile) -> Void
     let onRelogin: (Profile) -> Void
     let onRename: (Profile) -> Void
@@ -20,89 +21,119 @@ struct PreferencesView: View {
     @AppStorage(FiveHourAlertSound.defaultsKey) private var fiveHourSoundRaw: String = FiveHourAlertSound.default.rawValue
     @AppStorage(WeeklyCreditsAlertThreshold.defaultsKey) private var weeklyCreditsThreshold: Double = WeeklyCreditsAlertThreshold.default
     @AppStorage(AppPreferences.relaunchDesktopOnSwitch) private var relaunchDesktopOnSwitch: Bool = false
-    @AppStorage(AppPreferences.showUsageInMenuBar) private var showUsageInMenuBar: Bool = false
+    @AppStorage(StatusBarUsageSource.defaultsKey) private var statusBarSourceRaw: String = StatusBarUsageSource.off.rawValue
+    @AppStorage(CursorMonitoring.defaultsKey) private var cursorMonitoringEnabled: Bool = true
+    @AppStorage(CursorBudgetAlertThreshold.defaultsKey) private var cursorBudgetThreshold: Double = CursorBudgetAlertThreshold.default
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(AppStrings.t("Contas Claude", "Claude Accounts")).font(.title2.weight(.semibold))
-            Text(AppStrings.t("As contas ficam isoladas. A conta ativa será usada por novas sessões do Claude Code.", "Accounts are isolated. The active account is used by new Claude Code sessions."))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            if profiles.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "person.crop.circle.badge.exclamationmark").font(.largeTitle).foregroundStyle(.secondary)
-                    Text(AppStrings.t("Nenhuma conta cadastrada", "No accounts configured")).font(.headline)
-                    Text(AppStrings.t("Adicione ou importe uma conta pelo menu da barra de ferramentas.", "Add or import an account from the menu bar.")).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(profiles) { profile in
-                        profileRow(profile)
-                    }
-                }
-                .listStyle(.inset)
-            }
-
-            Divider()
-            HStack(spacing: 16) {
-                Stepper(value: $fiveHourThreshold, in: 1...100, step: 5) {
-                    Text(AppStrings.t("Alertar em \(Int(fiveHourThreshold))% da janela de 5h", "Alert at \(Int(fiveHourThreshold))% of the 5-hour window"))
-                }
-                Picker(AppStrings.t("Som:", "Sound:"), selection: $fiveHourSoundRaw) {
-                    ForEach(FiveHourAlertSound.allCases, id: \.self) { Text(soundLabel($0)).tag($0.rawValue) }
-                }
-                .fixedSize()
-                Spacer()
-            }
-            HStack(spacing: 16) {
-                Stepper(value: $weeklyCreditsThreshold, in: 1...100, step: 5) {
-                    Text(AppStrings.t("Avisar quando restarem \(Int(weeklyCreditsThreshold))% ou mais dos créditos semanais no dia da renovação", "Alert when \(Int(weeklyCreditsThreshold))% or more of weekly credits remain on renewal day"))
-                }
-                Spacer()
-            }
-            Toggle(isOn: $showUsageInMenuBar) {
-                Text(AppStrings.t("Mostrar % da janela de 5h da conta ativa na barra de menu", "Show the active account's 5-hour usage % in the menu bar"))
-            }
-            .help(AppStrings.t("Exibe o percentual usado ao lado do ícone, colorido por faixa (verde/laranja/vermelho).", "Shows the used percentage next to the icon, coloured by tier (green/orange/red)."))
-            Toggle(isOn: $relaunchDesktopOnSwitch) {
-                Text(AppStrings.t("Reabrir o app nativo do Claude ao trocar de conta", "Reopen the native Claude app when switching accounts"))
-            }
-            .help(AppStrings.t("Desativado por padrão. O terminal troca de conta sem reabrir o app nativo.", "Off by default. The terminal switches accounts without reopening the native app."))
-
-            if paseoDetected {
-                HStack(spacing: 8) {
-                    Button(paseoConfigured ? AppStrings.t("Reconfigurar integração com Paseo…", "Reconfigure Paseo integration…") : AppStrings.t("Integrar com Paseo…", "Integrate with Paseo…")) { onIntegratePaseo() }
-                        .buttonStyle(.bordered)
-                    if paseoConfigured {
-                        Text(AppStrings.t("Paseo já segue a conta ativa", "Paseo already follows the active account"))
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Text(AppStrings.t("Paseo detectado — sessões novas ainda não seguem a troca de conta", "Paseo detected — new sessions don't follow account switches yet"))
-                            .font(.caption).foregroundStyle(.orange)
-                    }
-                }
-            }
-
-            Divider()
-            HStack {
-                Button(AppStrings.t("Adicionar conta…", "Add account…")) { onAdd() }.buttonStyle(.borderedProminent)
-                Button(AppStrings.t("Importar perfil…", "Import profile…")) { onImport() }.buttonStyle(.bordered)
-                Button(AppStrings.t("Migrar perfis…", "Migrate profiles…")) { onMigrate() }.buttonStyle(.bordered)
-                Spacer()
-            }
-            HStack {
-                Text("Os perfis e credenciais serão preservados ao desinstalar.")
-                    .font(.caption)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(AppStrings.t("Contas Claude", "Claude Accounts")).font(.title2.weight(.semibold))
+                Text(AppStrings.t("As contas ficam isoladas. A conta ativa será usada por novas sessões do Claude Code.", "Accounts are isolated. The active account is used by new Claude Code sessions."))
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
-                Spacer()
-                Button(AppStrings.t("Desinstalar aplicativo…", "Uninstall app…"), role: .destructive) { onUninstall() }
-                    .buttonStyle(.bordered)
+
+                if profiles.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "person.crop.circle.badge.exclamationmark").font(.largeTitle).foregroundStyle(.secondary)
+                        Text(AppStrings.t("Nenhuma conta cadastrada", "No accounts configured")).font(.headline)
+                        Text(AppStrings.t("Adicione ou importe uma conta pelo menu da barra de ferramentas.", "Add or import an account from the menu bar.")).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+                } else {
+                    List {
+                        ForEach(profiles) { profile in
+                            profileRow(profile)
+                        }
+                    }
+                    .listStyle(.inset)
+                    .frame(minHeight: CGFloat(min(profiles.count, 4)) * 72)
+                }
+
+                Divider()
+                HStack(spacing: 16) {
+                    Stepper(value: $fiveHourThreshold, in: 1...100, step: 5) {
+                        Text(AppStrings.t("Alertar em \(Int(fiveHourThreshold))% da janela de 5h", "Alert at \(Int(fiveHourThreshold))% of the 5-hour window"))
+                    }
+                    Picker(AppStrings.t("Som:", "Sound:"), selection: $fiveHourSoundRaw) {
+                        ForEach(FiveHourAlertSound.allCases, id: \.self) { Text(soundLabel($0)).tag($0.rawValue) }
+                    }
+                    .fixedSize()
+                    Spacer()
+                }
+                HStack(spacing: 16) {
+                    Stepper(value: $weeklyCreditsThreshold, in: 1...100, step: 5) {
+                        Text(AppStrings.t("Avisar quando restarem \(Int(weeklyCreditsThreshold))% ou mais dos créditos semanais no dia da renovação", "Alert when \(Int(weeklyCreditsThreshold))% or more of weekly credits remain on renewal day"))
+                    }
+                    Spacer()
+                }
+
+                Picker(AppStrings.t("% na barra de menu:", "% in menu bar:"), selection: $statusBarSourceRaw) {
+                    Text(AppStrings.t("Desligado", "Off")).tag(StatusBarUsageSource.off.rawValue)
+                    Text(AppStrings.t("Só Claude (5h)", "Claude only (5h)")).tag(StatusBarUsageSource.claude.rawValue)
+                    Text(AppStrings.t("Só Cursor", "Cursor only")).tag(StatusBarUsageSource.cursor.rawValue)
+                    Text(AppStrings.t("Claude e Cursor", "Claude and Cursor")).tag(StatusBarUsageSource.both.rawValue)
+                }
+                .pickerStyle(.menu)
+                .help(AppStrings.t("Exibe o percentual usado ao lado do ícone, colorido por faixa (verde/laranja/vermelho).", "Shows the used percentage next to the icon, coloured by tier (green/orange/red)."))
+
+                Toggle(isOn: $relaunchDesktopOnSwitch) {
+                    Text(AppStrings.t("Reabrir o app nativo do Claude ao trocar de conta", "Reopen the native Claude app when switching accounts"))
+                }
+                .help(AppStrings.t("Desativado por padrão. O terminal troca de conta sem reabrir o app nativo.", "Off by default. The terminal switches accounts without reopening the native app."))
+
+                Divider()
+                Text(AppStrings.t("Cursor", "Cursor")).font(.title3.weight(.semibold))
+                Text(cursorStatus).font(.caption).foregroundStyle(.secondary)
+                Toggle(isOn: $cursorMonitoringEnabled) {
+                    Text(AppStrings.t("Monitorar uso do Cursor", "Monitor Cursor usage"))
+                }
+                .help(AppStrings.t("Consulta a API do Cursor a cada minuto (custo, limite, tokens por modelo).", "Queries the Cursor API every minute (cost, limit, tokens per model)."))
+                Stepper(value: $cursorBudgetThreshold, in: 1...100, step: 5) {
+                    Text(AppStrings.t("Alertar em \(Int(cursorBudgetThreshold))% do ciclo de faturamento do Cursor", "Alert at \(Int(cursorBudgetThreshold))% of the Cursor billing cycle"))
+                }
+
+                if paseoDetected {
+                    HStack(spacing: 8) {
+                        Button(paseoConfigured ? AppStrings.t("Reconfigurar integração com Paseo…", "Reconfigure Paseo integration…") : AppStrings.t("Integrar com Paseo…", "Integrate with Paseo…")) { onIntegratePaseo() }
+                            .buttonStyle(.bordered)
+                        if paseoConfigured {
+                            Text(AppStrings.t("Paseo já segue a conta ativa", "Paseo already follows the active account"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text(AppStrings.t("Paseo detectado — sessões novas ainda não seguem a troca de conta", "Paseo detected — new sessions don't follow account switches yet"))
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                }
+
+                Divider()
+                HStack {
+                    Button(AppStrings.t("Adicionar conta…", "Add account…")) { onAdd() }.buttonStyle(.borderedProminent)
+                    Button(AppStrings.t("Importar perfil…", "Import profile…")) { onImport() }.buttonStyle(.bordered)
+                    Button(AppStrings.t("Migrar perfis…", "Migrate profiles…")) { onMigrate() }.buttonStyle(.bordered)
+                    Spacer()
+                }
+                HStack {
+                    Text("Os perfis e credenciais serão preservados ao desinstalar.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(AppStrings.t("Desinstalar aplicativo…", "Uninstall app…"), role: .destructive) { onUninstall() }
+                        .buttonStyle(.bordered)
+                }
+            }
+            .padding(20)
+        }
+        .frame(minWidth: 640, idealWidth: 720, maxWidth: .infinity, minHeight: 480, idealHeight: 560, maxHeight: .infinity)
+        .onAppear {
+            // Garante que a chave nova exista (migra o Bool legado se preciso).
+            _ = StatusBarUsageSource.resolve()
+            if statusBarSourceRaw.isEmpty || StatusBarUsageSource(rawValue: statusBarSourceRaw) == nil {
+                statusBarSourceRaw = StatusBarUsageSource.resolve().rawValue
             }
         }
-        .padding(20)
-        .frame(width: 700, height: 450)
     }
 
     @ViewBuilder

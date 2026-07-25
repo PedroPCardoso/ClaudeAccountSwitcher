@@ -7,9 +7,8 @@ enum AppPreferences {
     /// chosen profile. Disabled by default so a switch does not disrupt an open desktop app.
     static let relaunchDesktopOnSwitch = "relaunchDesktopOnSwitch"
 
-    /// When enabled, the menu bar item shows the active account's 5-hour usage percentage next
-    /// to the icon, coloured by tier. Disabled by default; an unset value reads as off.
-    static let showUsageInMenuBar = "showUsageInMenuBar"
+    /// Legacy Bool key for the menu-bar usage badge. Prefer `StatusBarUsageSource.defaultsKey`.
+    static let showUsageInMenuBar = StatusBarUsageSource.legacyDefaultsKey
 
     /// UUIDs (as strings) of the profiles included in the aggregate usage analysis. Absent key
     /// = every profile selected (the obvious first-run default). See `AnalysisSelection` for the
@@ -28,6 +27,10 @@ enum AppPreferences {
     static func analysisSelectedProfiles(from profiles: [Profile]) -> [Profile] {
         AnalysisSelection.selected(from: profiles, savedRawIDs: analysisSavedRawIDs())
     }
+
+    static var statusBarUsageSource: StatusBarUsageSource {
+        StatusBarUsageSource.resolve()
+    }
 }
 
 @MainActor
@@ -38,6 +41,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private let activation: ActivationService
     private let auth: ClaudeAuthService
     private let usage = ClaudeUsageService()
+    private let cursorCredentials = CursorCredentialStore()
+    private let cursorUsage: CursorUsageService
+    private let cursorUsageStore: CursorUsageStore
     private let migration: MigrationService
     private let shell: ShellIntegrationManager
     private let locator: ClaudeLocator
@@ -46,10 +52,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var preferencesWindowController: PreferencesWindowController?
     private var usageWindowController: UsageWindowController?
     private var analysisWindowController: AnalysisWindowController?
+    private var cursorUsageWindowController: CursorUsageWindowController?
+    private var cursorAnalysisWindowController: CursorAnalysisWindowController?
     private var usageRefreshTimer: Timer?
     private var isRefreshingUsage = false
+    private var cursorSnapshot: CursorUsageSnapshot?
     private var fiveHourAlert = FiveHourAlertTracker()
     private var weeklyCreditsAlert = WeeklyCreditsAlertTracker()
+    private var cursorBudgetAlert = CursorBudgetAlertTracker()
 
     override init() {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude Account Switcher", isDirectory: true)
@@ -60,6 +70,16 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             // (disco cheio, permissão, sandbox), mostra um alerta nativo e sai.
             MenuBarController.presentStartupFailure(root: root, error: error)
         }
+        let cursorStore: CursorUsageStore
+        do {
+            cursorStore = try CursorUsageStore(root: root)
+        } catch {
+            MenuBarController.presentStartupFailure(root: root, error: error)
+        }
+        cursorUsageStore = cursorStore
+        cursorSnapshot = try? cursorStore.load()
+        let credentials = cursorCredentials
+        cursorUsage = CursorUsageService(credentialProvider: { try credentials.credentials() })
         let locator = ClaudeLocator()
         self.locator = locator
         auth = ClaudeAuthService(locator: locator)
@@ -151,16 +171,35 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         analysisItem.target = self
         analysisItem.toolTip = AppStrings.t("Compara o consumo somado das contas escolhidas: 1 Max vs 2–3 Pro", "Compares summed usage of the chosen accounts: 1 Max vs 2–3 Pro")
         menu.addItem(analysisItem)
+
+        if CursorMonitoring.isEnabled() {
+            menu.addItem(.separator())
+            let cursorHeader = NSMenuItem(title: AppStrings.t("Cursor", "Cursor"), action: nil, keyEquivalent: "")
+            cursorHeader.isEnabled = false
+            menu.addItem(cursorHeader)
+            for summary in cursorUsageSummary() {
+                let summaryItem = NSMenuItem(title: "    " + summary, action: nil, keyEquivalent: "")
+                summaryItem.isEnabled = false
+                summaryItem.indentationLevel = 1
+                menu.addItem(summaryItem)
+            }
+            let cursorUsageItem = NSMenuItem(title: AppStrings.t("Ver uso no Cursor…", "View Cursor usage…"), action: #selector(openCursorUsage), keyEquivalent: "")
+            cursorUsageItem.target = self
+            menu.addItem(cursorUsageItem)
+            let cursorAnalysisItem = NSMenuItem(title: AppStrings.t("Analisar uso do Cursor…", "Analyze Cursor usage…"), action: #selector(openCursorAnalysis), keyEquivalent: "")
+            cursorAnalysisItem.target = self
+            menu.addItem(cursorAnalysisItem)
+        }
+
+        menu.addItem(.separator())
         menu.addItem(withTitle: AppStrings.t("Preferências…", "Preferences…"), action: #selector(preferences), keyEquivalent: ","); menu.items.last?.target = self
         menu.addItem(withTitle: AppStrings.t("Sair", "Quit"), action: #selector(quit), keyEquivalent: "q"); menu.items.last?.target = self
         statusItem.menu = menu
         updateStatusItemUsage()
     }
 
-    /// Compõe o botão do status item: imagem sempre; e, quando o toggle está ligado e a conta
-    /// ativa tem cota de 5h, o percentual em texto negrito colorido por faixa (`UsageTier`) — a
-    /// cor carrega o significado. Sem conta ativa / sem usage / sem cota de 5h / toggle
-    /// desligado → só o ícone.
+    /// Compõe o botão do status item: imagem sempre; e, conforme `StatusBarUsageSource`,
+    /// o percentual Claude e/ou Cursor em texto negrito colorido por faixa (`UsageTier`).
     private func updateStatusItemUsage() {
         guard let button = statusItem?.button else { return }
         func showIconOnly() {
@@ -168,17 +207,32 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             button.title = ""
             statusItem.length = NSStatusItem.squareLength
         }
-        guard UserDefaults.standard.bool(forKey: AppPreferences.showUsageInMenuBar) else { showIconOnly(); return }
+        let source = AppPreferences.statusBarUsageSource
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
         let activeUsage = profiles.first(where: { $0.id == activeID })?.usage
-        guard let label = StatusBarUsage.label(activeUsage: activeUsage),
-              let quota = activeUsage?.quotas.first(where: { $0.kind == .fiveHour }) else { showIconOnly(); return }
+        let segments = StatusBarUsage.segments(
+            source: source,
+            activeClaude: activeUsage,
+            cursor: cursorSnapshot)
+        guard !segments.isEmpty else { showIconOnly(); return }
+
+        let font = usageBadgeFont()
+        let composed = NSMutableAttributedString(string: " ")
+        for (index, segment) in segments.enumerated() {
+            if index > 0 {
+                composed.append(NSAttributedString(string: " | ", attributes: [
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                    .font: font
+                ]))
+            }
+            composed.append(NSAttributedString(string: segment.text, attributes: [
+                .foregroundColor: statusColor(for: segment.tier),
+                .font: font
+            ]))
+        }
         button.imagePosition = .imageLeft
-        button.attributedTitle = NSAttributedString(string: " " + label, attributes: [
-            .foregroundColor: statusColor(for: UsageTier.forPercent(quota.usedPercent)),
-            .font: usageBadgeFont()
-        ])
+        button.attributedTitle = composed
         statusItem.length = NSStatusItem.variableLength
     }
 
@@ -305,6 +359,34 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         refreshProfileMetadata()
     }
 
+    @objc private func openCursorUsage() {
+        if cursorUsageWindowController == nil {
+            cursorUsageWindowController = CursorUsageWindowController(
+                snapshot: cursorSnapshot,
+                isRefreshing: isRefreshingUsage,
+                onRefresh: { [weak self] in self?.refreshProfileMetadata() })
+        } else {
+            cursorUsageWindowController?.update(snapshot: cursorSnapshot, isRefreshing: isRefreshingUsage)
+        }
+        cursorUsageWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        refreshProfileMetadata()
+    }
+
+    @objc private func openCursorAnalysis() {
+        if cursorAnalysisWindowController == nil {
+            cursorAnalysisWindowController = CursorAnalysisWindowController(
+                snapshot: cursorSnapshot,
+                isRefreshing: isRefreshingUsage,
+                onRefresh: { [weak self] in self?.refreshProfileMetadata() })
+        } else {
+            cursorAnalysisWindowController?.update(snapshot: cursorSnapshot, isRefreshing: isRefreshingUsage)
+        }
+        cursorAnalysisWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        refreshProfileMetadata()
+    }
+
     @objc private func migrateExisting() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         do {
@@ -326,6 +408,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 activeID: activeID,
                 paseoDetected: paseo.isDetected(),
                 paseoConfigured: paseo.isConfigured(),
+                cursorStatus: cursorCredentialStatusText(),
                 onActivate: { [weak self] profile in self?.activateFromPreferences(profile) },
                 onRelogin: { [weak self] profile in self?.reloginFromPreferences(profile) },
                 onRename: { [weak self] profile in self?.renameSpecificProfile(profile) },
@@ -337,7 +420,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 onIntegratePaseo: { [weak self] in self?.integratePaseo() }
             )
         } else {
-            preferencesWindowController?.update(profiles: profiles, activeID: activeID, paseoDetected: paseo.isDetected(), paseoConfigured: paseo.isConfigured())
+            preferencesWindowController?.update(
+                profiles: profiles,
+                activeID: activeID,
+                paseoDetected: paseo.isDetected(),
+                paseoConfigured: paseo.isConfigured(),
+                cursorStatus: cursorCredentialStatusText())
         }
         preferencesWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -365,9 +453,57 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private func refreshPreferences() {
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
-        preferencesWindowController?.update(profiles: profiles, activeID: activeID, paseoDetected: paseo.isDetected(), paseoConfigured: paseo.isConfigured())
+        preferencesWindowController?.update(
+            profiles: profiles,
+            activeID: activeID,
+            paseoDetected: paseo.isDetected(),
+            paseoConfigured: paseo.isConfigured(),
+            cursorStatus: cursorCredentialStatusText())
         usageWindowController?.update(profiles: profiles, activeID: activeID, isRefreshing: isRefreshingUsage)
         analysisWindowController?.update(profiles: profiles, isRefreshing: isRefreshingUsage)
+        cursorUsageWindowController?.update(snapshot: cursorSnapshot, isRefreshing: isRefreshingUsage)
+        cursorAnalysisWindowController?.update(snapshot: cursorSnapshot, isRefreshing: isRefreshingUsage)
+    }
+
+    private func cursorCredentialStatusText() -> String {
+        do {
+            let creds = try cursorCredentials.credentials()
+            let plan = creds.membershipType?.uppercased() ?? "?"
+            let email = creds.email ?? AppStrings.t("sem e-mail", "no email")
+            return AppStrings.t("Cursor: \(email) · plano \(plan)", "Cursor: \(email) · \(plan) plan")
+        } catch CursorCredentialError.tokenExpired {
+            return AppStrings.t("Cursor: sessão expirada — faça login de novo no app", "Cursor: session expired — sign in again in the app")
+        } catch {
+            return AppStrings.t("Cursor não autenticado — faça login no app", "Cursor not signed in — sign in to the app")
+        }
+    }
+
+    private func cursorUsageSummary() -> [String] {
+        guard let plan = cursorSnapshot?.planUsage else {
+            return [AppStrings.t("Uso indisponível", "Usage unavailable")]
+        }
+        let reset = QuotaFormatter.resetDescription(plan.billingCycleEnd)
+        var lines: [String] = []
+        var buckets: [String] = []
+        if let cursorModels = plan.cursorModelsPercent {
+            buckets.append(AppStrings.t(
+                "Modelos Cursor \(Int(cursorModels.rounded()))%",
+                "Cursor Models \(Int(cursorModels.rounded()))%"))
+        }
+        if let otherModels = plan.otherModelsPercent {
+            buckets.append(AppStrings.t(
+                "Outros modelos \(Int(otherModels.rounded()))%",
+                "Other Models \(Int(otherModels.rounded()))%"))
+        }
+        if !buckets.isEmpty {
+            lines.append(buckets.joined(separator: " · ") + " · " + AppStrings.t("renova \(reset)", "resets \(reset)"))
+        }
+        let spent = String(format: "$%.2f", plan.totalSpendCents / 100)
+        let limit = String(format: "$%.2f", plan.limitCents / 100)
+        lines.append(AppStrings.t(
+            "Gasto do ciclo \(spent) de \(limit)",
+            "Cycle spend \(spent) of \(limit)"))
+        return lines
     }
 
     private func refreshProfileMetadata() {
@@ -376,6 +512,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         refreshPreferences()                        // reflete o estado de "carregando" imediatamente
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
+        let shouldRefreshCursor = CursorMonitoring.isEnabled()
         Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
             var weeklyCreditsHits: [WeeklyCreditsAlertHit] = []
@@ -406,8 +543,47 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 let hits = weeklyCreditsHits
                 await MainActor.run { self.notifyWeeklyCreditsAlert(hits) }
             }
+            if shouldRefreshCursor {
+                await self.refreshCursorUsage()
+            }
             await MainActor.run { self.isRefreshingUsage = false; self.rebuildMenu(); self.refreshPreferences() }
         }
+    }
+
+    private func refreshCursorUsage() async {
+        do {
+            let snapshot = try await cursorUsage.fetch()
+            try? cursorUsageStore.save(snapshot)
+            await MainActor.run {
+                self.cursorSnapshot = snapshot
+                self.checkCursorBudgetAlert(snapshot)
+            }
+        } catch let error as CursorUsageError where error == .unauthorized || error == .tokenExpired {
+            await MainActor.run { self.cursorCredentials.invalidate() }
+        } catch {
+            // Degradação: mantém o último snapshot em cache; não interrompe o fluxo Claude.
+        }
+    }
+
+    private func checkCursorBudgetAlert(_ snapshot: CursorUsageSnapshot) {
+        guard let plan = snapshot.planUsage,
+              let percent = plan.dashboardUsedPercent else { return }
+        let threshold = CursorBudgetAlertThreshold.resolve(
+            UserDefaults.standard.double(forKey: CursorBudgetAlertThreshold.defaultsKey))
+        guard cursorBudgetAlert.evaluate(
+            usedPercent: percent,
+            threshold: threshold,
+            billingCycleEnd: plan.billingCycleEnd) else { return }
+        let pct = Int(percent.rounded())
+        let thr = Int(threshold.rounded())
+        let cursorBar = plan.cursorModelsPercent.map { Int($0.rounded()) }.map { "\($0)%" } ?? "—"
+        let otherBar = plan.otherModelsPercent.map { Int($0.rounded()) }.map { "\($0)%" } ?? "—"
+        let message = AppStrings.t(
+            "⚠️ Cursor: cota incluída em \(pct)% (Modelos Cursor \(cursorBar), Outros \(otherBar), limiar \(thr)%) — renova \(QuotaFormatter.resetDescription(plan.billingCycleEnd))",
+            "⚠️ Cursor: included quota at \(pct)% (Cursor Models \(cursorBar), Other \(otherBar), threshold \(thr)%) — resets \(QuotaFormatter.resetDescription(plan.billingCycleEnd))")
+        let n = NSUserNotification(); n.title = "Claude Account Switcher"; n.informativeText = message
+        n.soundName = fiveHourAlertSoundName()
+        NSUserNotificationCenter.default.deliver(n)
     }
 
     private struct WeeklyCreditsAlertHit {
