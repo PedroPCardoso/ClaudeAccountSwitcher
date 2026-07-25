@@ -8,7 +8,7 @@ App nativo macOS (SwiftUI/AppKit), menu-bar app, chamado "Claude Account Switche
 múltiplos perfis/contas isolados do Claude Code (cada um com seu próprio `CLAUDE_CONFIG_DIR`,
 credenciais, histórico, config) e permite alternar entre eles. A troca só afeta novos processos;
 sessões shell/GUI já abertas não são alteradas. README completo e changelog vivem em
-`README.md` (versão atual: 1.3.6 na última leitura).
+`README.md` (versão atual: 1.3.7 na última leitura).
 
 Componentes de produto (ver specs para detalhes de design):
 - Gerenciamento de perfis: `ProfileStore` (persistência), `ActivationService` (troca com rollback),

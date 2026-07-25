@@ -1,17 +1,17 @@
-# Claude Account Switcher 1.3.6
+# Claude Account Switcher 1.3.7
 
 <img src="docs/assets/claude-account-switcher-logo.png" alt="Claude Account Switcher logo" width="180">
 
 Native macOS menu bar app for switching between isolated Claude Code profiles. The selected profile applies to new sessions; already-open sessions remain unchanged.
 
-Current release: **1.3.6**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
+Current release: **1.3.7**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
 
-Direct download: [Claude-Account-Switcher-1.3.6.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.3.6.dmg)
+Direct download: [Claude-Account-Switcher-1.3.7.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.3.7.dmg)
 
-### Unreleased
+### What's new in 1.3.7
 
-- **Cursor usage monitoring.** The menu bar app now tracks the signed-in Cursor IDE account alongside Claude: billing-cycle cost and plan limit, used percent, reset date, and tokens/cost per model (Claude, GPT, Gemini, Grok, Composer). New windows **View Cursor usage…** and **Analyze Cursor usage…**, a configurable budget alert (default 80% of the cycle), and a Preferences picker for what the menu-bar badge shows (`off` / Claude / Cursor / both). Data comes from Cursor's internal Dashboard API via the session token in `state.vscdb` — there is no local token log and no account switching for Cursor (single session).
-- **Cursor usage mirrors the Included in Pro bars.** The Cursor Settings page shows two bars only — **Cursor Models** (`autoPercentUsed`) and **Other Models** (`apiPercentUsed`). The app matches those. The API's `totalSpend / limit` figure (~50%+) and `totalPercentUsed` (~3%) are *not* what that page displays and are not used as the included-quota percentage. Menu-bar badge and budget alert use the higher of the two bars.
+- **Cursor usage monitoring.** The menu bar app now tracks the signed-in Cursor IDE account alongside Claude: billing-cycle cost and plan limit, reset date, and tokens/cost per model (Claude, GPT, Gemini, Grok, Composer). New windows **View Cursor usage…** and **Analyze Cursor usage…**, a configurable budget alert (default 80%), and a Preferences picker for what the menu-bar badge shows (`off` / Claude / Cursor / both). Data comes from Cursor's internal Dashboard API via the session token in `state.vscdb` — there is no local token log and no account switching for Cursor (single session).
+- **Matches Cursor's Included in Pro bars.** The usage window shows the same two percentages as Cursor Settings — **Cursor Models** (`autoPercentUsed`) and **Other Models** (`apiPercentUsed`) — plus cycle spend in dollars. The API's `totalSpend / limit` and `totalPercentUsed` fields are *not* what that Settings page displays; the menu-bar badge and budget alert use the higher of the two Included bars.
 
 ### What's new in 1.3.6
 
