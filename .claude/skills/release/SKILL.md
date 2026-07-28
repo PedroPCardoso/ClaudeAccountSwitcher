@@ -38,8 +38,14 @@ Editar `Scripts/build-app.sh` — as duas chaves do Info.plist embutido:
 
 ### 3. Changelog no README (o README É o changelog do projeto)
 Em `README.md`: título `# Claude Account Switcher $VER`, a linha
-`Current release: **$VER**.`, o link de download do DMG (`dist/Claude-Account-Switcher-$VER.dmg`)
-e uma nova seção `### What's new in $VER` (bilíngue não é exigido no README, que é em inglês).
+`Current release: **$VER**.`, o link de download apontando para o **asset da release**
+(`https://github.com/PedroPCardoso/ClaudeAccountSwitcher/releases/download/v$VER/Claude-Account-Switcher-$VER.dmg`
+— não o link raw de `dist/`, que o GitHub não contabiliza como download) e uma nova seção
+`### What's new in $VER` (bilíngue não é exigido no README, que é em inglês).
+
+> O link do asset só fica "vivo" depois do passo 7 (`gh release create`). Como os passos rodam em
+> sequência na mesma execução, a janela em que o link fica quebrado é breve — mas não pule o
+> passo 7 nem publique só o commit do passo 6 isoladamente.
 
 ### 4. Build do .app e do DMG
 ```zsh
@@ -88,8 +94,9 @@ Confirme que instalou em `~/Applications/Claude Account Switcher.app` e que o ap
 
 ## Documentação relacionada (fazer se as features novas pedirem)
 
-- **Landing page**: se a release muda o que o site anuncia (features/versão/download), atualize
-  o site seguindo a skill **landing-page** — a página no ar é `docs/index.html`.
+- **Landing page**: sempre atualize o botão de download em `docs/index.html` para o asset da nova
+  release (mesmo padrão de URL do passo 3), seguindo a skill **landing-page**. Se a release muda
+  o que o site anuncia (features/versão), atualize também esse conteúdo.
 - **CLAUDE.md**: se surgiram novas chaves de `UserDefaults`, novos arquivos/targets ou a
   versão mudou, atualize as seções correspondentes.
 - **Specs** (`docs/superpowers/specs/`): registre features grandes como
@@ -99,7 +106,8 @@ Confirme que instalou em `~/Applications/Claude Account Switcher.app` e que o ap
 
 - [ ] `swift run ClaudeAccountSwitcherTests` verde antes de lançar.
 - [ ] `build-app.sh` com `$VER` nas duas chaves de versão.
-- [ ] README: título, current release, link do DMG, "What's new in $VER".
+- [ ] README: título, current release, link do asset da release (não o link raw), "What's new in $VER".
+- [ ] Botão de download da landing page (`docs/index.html`) atualizado para o asset da nova release.
 - [ ] `.app` reporta `$VER` e empacota `cas`; DMG copiado para `dist/Claude-Account-Switcher-$VER.dmg`.
 - [ ] Commit + `push origin main`; tag `v$VER` empurrada; release criada com o DMG.
 - [ ] **Instalado localmente via `install-dev.sh` e app aberto.** (obrigatório)

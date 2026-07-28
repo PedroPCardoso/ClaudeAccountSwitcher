@@ -6,7 +6,7 @@ Native macOS menu bar app for switching between isolated Claude Code profiles. T
 
 Current release: **1.3.7**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
 
-Direct download: [Claude-Account-Switcher-1.3.7.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-1.3.7.dmg)
+Direct download: [Claude-Account-Switcher-1.3.7.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/releases/download/v1.3.7/Claude-Account-Switcher-1.3.7.dmg)
 
 ### What's new in 1.3.7
 

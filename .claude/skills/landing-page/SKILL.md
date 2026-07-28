@@ -52,10 +52,12 @@ git fetch origin -q && git merge --ff-only origin/main   # sincroniza antes de e
 
 ## Ao lançar uma nova versão
 
-O botão de download aponta para o DMG versionado em `dist/`:
-`https://github.com/PedroPCardoso/ClaudeAccountSwitcher/raw/main/dist/Claude-Account-Switcher-<versão>.dmg`.
-Ao subir versão, atualize esse link e qualquer número de versão no HTML. O `dist/<dmg>` precisa
-existir em `origin/main` (mesmo lugar), senão o link quebra.
+O botão de download aponta para o **asset da release no GitHub** (não para o link raw de
+`dist/`), porque só assets de release têm `download_count` contabilizado pelo GitHub:
+`https://github.com/PedroPCardoso/ClaudeAccountSwitcher/releases/download/v<versão>/Claude-Account-Switcher-<versão>.dmg`.
+Ao subir versão, atualize esse link (e o mesmo link no `README.md`) e qualquer número de versão
+no HTML. A release `v<versão>` já precisa existir com o asset publicado (ver skill `release`,
+passo de `gh release create`) antes de atualizar este link — senão ele quebra.
 
 ## Checklist rápido
 
