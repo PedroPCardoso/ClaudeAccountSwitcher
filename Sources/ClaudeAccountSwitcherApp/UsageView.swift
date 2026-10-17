@@ -58,7 +58,6 @@ struct UsageView: View {
                         Text(profile.name).font(.headline)
                         if activeID == profile.id { Text(AppStrings.t("ATIVA", "ACTIVE")).font(.caption2.weight(.bold)).foregroundStyle(.blue) }
                     }
-                    Text(profile.email ?? AppStrings.t("E-mail não identificado", "Email not identified")).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if let fetchedAt = profile.usage?.fetchedAt {

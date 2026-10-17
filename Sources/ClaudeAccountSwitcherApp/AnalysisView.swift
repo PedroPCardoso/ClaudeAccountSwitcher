@@ -113,12 +113,7 @@ struct AnalysisView: View {
                                 Image(systemName: selectedIDs.contains(profile.id) ? "checkmark.square.fill" : "square")
                                     .foregroundStyle(selectedIDs.contains(profile.id) ? color(for: profile) : .secondary)
                                 Circle().fill(color(for: profile)).frame(width: 10, height: 10)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(profile.name).font(.subheadline)
-                                    if let email = profile.email {
-                                        Text(email).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                    }
-                                }
+                                Text(profile.name).font(.subheadline)
                                 Spacer()
                             }
                             .contentShape(Rectangle())

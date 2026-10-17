@@ -174,7 +174,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             menu.addItem(withTitle: AppStrings.t("Nenhum perfil importado", "No profiles imported"), action: nil, keyEquivalent: "")
         } else {
             for profile in profiles {
-                let item = NSMenuItem(title: profile.name + (profile.email.map { " — \($0)" } ?? ""), action: #selector(selectProfile(_:)), keyEquivalent: "")
+                // Só o apelido: o e-mail expõe a empresa em qualquer tela compartilhada. Ele fica
+                // visível apenas nas Preferências (gestão das contas).
+                let item = NSMenuItem(title: profile.name, action: #selector(selectProfile(_:)), keyEquivalent: "")
                 item.target = self; item.representedObject = profile; item.state = profile.id == active ? .on : .off
                 item.toolTip = usageTooltip(for: profile)
                 menu.addItem(item)
@@ -302,8 +304,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = AppStrings.t("Reparar estado ativo?", "Repair active state?")
         alert.informativeText = AppStrings.t(
-            "O arquivo active-profile.json está inválido, e por isso o comando claude no terminal recusa rodar. Sugestão (pela variável do launchd ou pelo último uso): \(suggestion.name)\(suggestion.email.map { " — \($0)" } ?? ""). Você pode escolher outro perfil no menu em vez disso.",
-            "active-profile.json is invalid, so the claude command in the terminal refuses to run. Suggestion (from the launchd variable or last use): \(suggestion.name)\(suggestion.email.map { " — \($0)" } ?? ""). You can pick another profile from the menu instead.")
+            "O arquivo active-profile.json está inválido, e por isso o comando claude no terminal recusa rodar. Sugestão (pela variável do launchd ou pelo último uso): \(suggestion.name). Você pode escolher outro perfil no menu em vez disso.",
+            "active-profile.json is invalid, so the claude command in the terminal refuses to run. Suggestion (from the launchd variable or last use): \(suggestion.name). You can pick another profile from the menu instead.")
         alert.addButton(withTitle: AppStrings.t("Restaurar \(suggestion.name)", "Restore \(suggestion.name)")); alert.addButton(withTitle: AppStrings.t("Cancelar", "Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task { do { let result = try await activation.activate(suggestion, syncDesktopApp: false); fiveHourAlert.reset(); rebuildMenu(); refreshPreferences(); notify(activationResult: result) } catch { showError(error) } }
@@ -408,7 +410,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let profiles = (try? store.list()) ?? []
         guard !profiles.isEmpty else { notify(AppStrings.t("Nenhum perfil cadastrado", "No profiles registered")); return }
         let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
-        profiles.forEach { picker.addItem(withTitle: $0.name + ($0.email.map { " — \($0)" } ?? "")) }
+        profiles.forEach { picker.addItem(withTitle: $0.name) }
         let field = NSTextField(string: profiles[0].name); field.placeholderString = "Novo nome"; field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
         let accessory = NSStackView(views: [picker, field]); accessory.orientation = .vertical; accessory.spacing = 8; accessory.frame = NSRect(x: 0, y: 0, width: 260, height: 62)
         let alert = NSAlert(); alert.messageText = "Renomear perfil"; alert.informativeText = "O nome é apenas um rótulo local; identidade, diretório e credenciais permanecem inalterados."; alert.accessoryView = accessory; alert.addButton(withTitle: "Salvar"); alert.addButton(withTitle: "Cancelar")
