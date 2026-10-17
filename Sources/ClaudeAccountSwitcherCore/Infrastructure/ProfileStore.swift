@@ -40,6 +40,22 @@ public final class ProfileStore: @unchecked Sendable {
         }
     }
 
+    /// Read-modify-write de um único perfil dentro da seção crítica. Prefira isto a `save(_:)`
+    /// quando o chamador partiu de um snapshot que pode estar velho (item de menu montado há
+    /// minutos, refresh em background que demorou): `save` grava o struct inteiro e reverte
+    /// qualquer campo que outro escritor tenha mudado nesse meio-tempo (rename, uso, e-mail).
+    /// Lança `missingProfile` se o id não existir — nunca cria um perfil por acidente.
+    @discardableResult
+    public func update(id: UUID, _ mutate: (inout Profile) throws -> Void) throws -> Profile {
+        try queue.sync {
+            var profiles = try listLocked()
+            guard let index = profiles.firstIndex(where: { $0.id == id }) else { throw StoreError.missingProfile(id) }
+            try mutate(&profiles[index])
+            try atomicWrite(try encoder.encode(profiles), to: metadataURL)
+            return profiles[index]
+        }
+    }
+
     public func remove(_ profile: Profile) throws {
         try queue.sync {
             let managedRoot = profilesDirectory.standardizedFileURL.path
@@ -116,7 +132,9 @@ public final class ProfileStore: @unchecked Sendable {
         let temporary = destination.appendingPathExtension("tmp-\(UUID().uuidString)")
         try data.write(to: temporary, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
-        if fileManager.fileExists(atPath: destination.path) { _ = try fileManager.replaceItemAt(destination, withItemAt: temporary) }
+        // `.usingNewMetadataOnly`: sem isso o replace preserva as permissões do arquivo antigo
+        // (estados gravados por versões anteriores ficavam 644 para sempre).
+        if fileManager.fileExists(atPath: destination.path) { _ = try fileManager.replaceItemAt(destination, withItemAt: temporary, options: [.usingNewMetadataOnly]) }
         else { try fileManager.moveItem(at: temporary, to: destination) }
     }
 }

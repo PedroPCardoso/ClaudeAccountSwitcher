@@ -40,7 +40,7 @@ Direct download: [Claude-Account-Switcher-1.3.7.dmg](https://github.com/PedroPCa
 
 ### Real Pro/Max usage
 
-In Preferences and in the account menu bar tooltip, the app queries Claude Code OAuth usage directly, including the 5-hour and weekly windows. Each profile uses only the credential stored in the Keychain for its own `CLAUDE_CONFIG_DIR`; no 9router installation or other gateway is required. This is a consumer endpoint and may change without notice.
+In Preferences and in the account menu bar tooltip, the app queries Claude Code OAuth usage directly, including the 5-hour and weekly windows. Each profile uses only the credential stored in the Keychain for its own `CLAUDE_CONFIG_DIR`; no proxy or gateway is required. This is a consumer endpoint and may change without notice.
 
 The **View Claude usage…** menu opens an internal window with per-account cards, visual progress bars, usage percentages, and reset times. The active account's 5-hour usage percentage is also shown directly in the menu bar next to the icon (toggle in Preferences).
 
@@ -91,7 +91,19 @@ Profiles are stored in `~/Library/Application Support/Claude Account Switcher/Pr
 
 When repairing integration, the app installs a launcher at `~/Library/Application Support/Claude Account Switcher/bin/claude` and adds a delimited block to `~/.zprofile`. The launcher preserves all `claude` arguments and injects the active profile's `CLAUDE_CONFIG_DIR`. The app also updates the launchd environment for new graphical applications.
 
+The same block also sources `bin/cas-env.sh` (or `bin/cas-env.fish`), which exports the active profile's `CLAUDE_CONFIG_DIR` into the shell itself and refreshes it before each prompt whenever the active profile changes. This matters for third-party installers that run outside the launcher — `npx <tool> setup`, plugin or skill installers, `claude mcp add` from scripts — because they honor `CLAUDE_CONFIG_DIR` and would otherwise write to `~/.claude`. With the block loaded, they land in the active profile.
+
 The default shortcut is `⌥⌘C`. Applications that were already open may need to be restarted to receive the new environment.
+
+## Session safety
+
+Switching never moves or touches Claude Code data: each conversation stays in the profile it was started in, and processes that are already running keep their directory. The app helps with the edge cases around that:
+
+- **Where is my conversation?…** searches every profile by session id or project folder and builds the `cas switch … && claude --resume <id>` command for you.
+- **Removing a profile** warns when Claude Code sessions are still running in it and also deletes the matching Keychain credential.
+- **Active state repair**: if `active-profile.json` is ever corrupted, the launcher refuses to run (it never silently falls back to `~/.claude`) and the menu offers to restore the profile recorded in launchd or the most recently used one.
+- **Native app relaunch** waits up to 20 s for a graceful quit and does not force-kill the app unless you enable that in Preferences; copying the native app session into a profile is refused while the app is open.
+- **Maintenance…** prunes old dotfile backups, stale `.claude.json.tmp.*` files, orphaned profile directories and Keychain credentials of removed profiles, after showing what it will delete.
 
 ## Command line (`cas`)
 

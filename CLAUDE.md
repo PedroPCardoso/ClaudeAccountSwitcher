@@ -16,10 +16,12 @@ Componentes de produto (ver specs para detalhes de design):
   desktop).
 - Integração de shell: `ShellIntegrationManager` instala um launcher transparente em
   `~/Library/Application Support/.../bin/claude` que resolve o perfil ativo e invoca o binário
-  oficial com `CLAUDE_CONFIG_DIR` correto — cobre shells já abertos, sem precisar de alias.
+  oficial com `CLAUDE_CONFIG_DIR` correto — cobre shells já abertos, sem precisar de alias. O mesmo
+  bloco sourceia `bin/cas-env.sh`, que exporta `CLAUDE_CONFIG_DIR` no shell (para instaladores de
+  terceiros que rodam fora do launcher).
 - Autenticação: `ClaudeAuthService` chama `claude auth status`/login do CLI oficial.
-- Uso/cotas: `ClaudeUsageService` lê o endpoint OAuth de consumo (`/api/oauth/usage`, mesmo usado
-  pelo 9router, não é API pública documentada) — expõe quotas "Janela 5h", "Semanal" e
+- Uso/cotas: `ClaudeUsageService` lê o endpoint OAuth de consumo (`/api/oauth/usage`,
+  não é API pública documentada) — expõe quotas "Janela 5h", "Semanal" e
   "Semanal <Modelo>" (`seven_day_<modelo>`), mais soma de tokens locais das sessões.
 - **Uso do Cursor (monitoramento):** `CursorUsageService` consulta a API interna
   `api2.cursor.sh/aiserver.v1.DashboardService` (Bearer do `state.vscdb`) — custo/limite do ciclo,
@@ -87,6 +89,9 @@ Caminho base: raiz do repositório.
   (Opus/Sonnet/Haiku) com os multiplicadores de cache da Anthropic (cache lido ~0,1x, escrito 5m
   1,25x, escrito 1h 2x, output ~5x); `costUSD(model:tokens:)` → `nil` p/ modelo desconhecido.
   Espelha a lógica do `CostUsagePricing` do CodexBar/`ccusage` (feature 1.3.6).
+- `ActiveStateRepair.swift` — `suggestion(profiles:launchdDirectory:)`: perfil a restaurar quando
+  `active-profile.json` está corrompido (casa com o `CLAUDE_CONFIG_DIR` do launchd, senão o
+  `lastUsedAt` mais recente). Usado pelo item "reparar…" do menu.
 - `ProfileResolver.swift` — `resolve(_:query:)` do CLI `cas` (match exato nome/email →
   found/notFound/ambiguous, issue #35).
 - `CASCommand.swift` — `CASParser.parse`/`CASCommand`: parsing/dispatch do CLI `cas` com exit code,
@@ -95,8 +100,15 @@ Caminho base: raiz do repositório.
 ### `Sources/ClaudeAccountSwitcherCore/Infrastructure/` (I/O, processos, rede, sistema)
 - `ProfileStore.swift` — persistência atômica de perfis em JSON (`profiles.json`,
   `active-profile.json`) sob um diretório raiz gerenciado; migra estado legado de conta ativa.
+  **Convenção:** `save(_:)` só para criar; toda mutação de um perfil existente usa
+  `update(id:_:)` (read-modify-write na fila) — `save` de um struct que atravessou await/UI
+  reverte rename/uso gravados por outro escritor (lost update, corrigido em 2026-10-17).
 - `ActivationService.swift` — orquestra a troca de perfil: atualiza `launchctl setenv
-  CLAUDE_CONFIG_DIR`, sincroniza app desktop, integra Paseo; rollback se falhar.
+  CLAUDE_CONFIG_DIR`, sincroniza app desktop, integra Paseo; rollback se falhar. Grava só
+  `lastUsedAt`/`health` via `store.update`, nunca o snapshot recebido.
+- `SessionActivity.swift` — `runningSessions(in:)` lista processos `claude` vivos de um perfil
+  lendo `sessions/<pid>.json` (marcador do próprio CLI) e confirmando com `kill(pid, 0)`. Usado
+  para avisar antes de remover um perfil.
 - `ClaudeAuthService.swift` — chama `claude auth status`/login via CLI oficial, mapeia para
   `AuthStatus`.
 - `ClaudeLocator.swift` — localiza o binário `claude` real em `~/.local/share/claude/versions/...`.
@@ -118,10 +130,24 @@ Caminho base: raiz do repositório.
   dedup+quebra+custo em 1.3.6).
 - `DesktopAppActivator.swift` / `DesktopAppClient.swift` — localiza, encerra e relança o app
   desktop nativo do Claude (`com.anthropic.claudefordesktop`) apontando para o perfil escolhido.
+  Espera 20 s pelo encerramento gracioso e **não** faz `forceTerminate` a menos que a preferência
+  `forceQuitDesktopOnSwitch` permita (matar o Electron em escrita corrompe LevelDB/Cookies).
+- `KeychainCredentials.swift` — nome do serviço `Claude Code-credentials-<sha256(dir)[0:8]>`
+  (fonte única, reutilizado pelo `ClaudeUsageService`), `delete(for:)` ao remover perfil,
+  `listServices()`/`stale(...)` para credenciais órfãs (via `security dump-keychain`).
+- `ConversationLocator.swift` — "onde está minha conversa?": procura `projects/<slug>/<id>.jsonl`
+  em todos os perfis por prefixo do id, slug da pasta ou `cwd`; monta o comando `--resume`.
+- `MaintenanceService.swift` — `scan()` lista e `apply()` remove: `Backups/shell-*` além dos 5
+  mais novos por arquivo, `.claude.json.tmp.*` > 7 dias, diretórios órfãos de `Profiles/`,
+  credenciais órfãs do Keychain. Menu "Manutenção…".
 - `LaunchdEnvironment.swift` — wrapper de `launchctl setenv/unsetenv CLAUDE_CONFIG_DIR`.
 - `LoginItemService.swift` — habilita/desabilita início automático via `SMAppService`.
-- `MigrationService.swift` — importa ambientes `~/.claude`/`~/.claude-work` existentes, cópia de
-  sessão desktop default para perfil novo.
+- `MigrationService.swift` — importa ambientes `~/.claude`/`~/.claude-work` existentes
+  (`execute`) e pastas escolhidas pelo usuário (`importDirectory`), cópia de sessão desktop default
+  para perfil novo (recusa com o app aberto: `MigrationError.desktopAppRunning`; copia em staging e
+  renomeia no fim). Ao importar `~/.claude` também copia o `~/.claude.json`
+  global (fica FORA da pasta sem `CLAUDE_CONFIG_DIR`; dentro do perfil o CLI lê
+  `<perfil>/.claude.json`) — `MigrationPlan.globalConfig`.
 - `PaseoIntegration.swift` — mantém symlink estável de config para compatibilidade com o daemon
   Paseo (ver comentário no arquivo para o motivo detalhado).
 - `ProcessRunner.swift` — wrapper de `Process` com limite de output e captura de stdout/stderr.
@@ -163,7 +189,7 @@ Caminho base: raiz do repositório.
   bin gerenciado via `ShellIntegrationManager.install(..., casBinary:)` (feature 1.3.5, issue #35).
 
 ### `Tests/ClaudeAccountSwitcherTests/`
-- `ProfileStoreTests.swift` — único arquivo de teste do projeto (533+ linhas). Ver seção de
+- `ProfileStoreTests.swift` — único arquivo de teste do projeto (100 testes). Ver seção de
   convenção de teste abaixo.
 
 ### Outros diretórios
@@ -220,7 +246,10 @@ Vivem em `docs/superpowers/`:
 - `docs/superpowers/specs/` — specs aprovadas, formato de nome
   `YYYY-MM-DD-<topico>-design.md`. Confirmados: `2026-07-19-claude-account-switcher-design.md`,
   `2026-07-20-five-hour-usage-alert-design.md`, `2026-07-20-native-app-profile-sync-design.md`,
-  `2026-07-21-weekly-credits-alert-design.md`, `2026-07-25-cursor-usage-monitoring-design.md`.
+  `2026-07-21-weekly-credits-alert-design.md`, `2026-07-25-cursor-usage-monitoring-design.md`,
+  `2026-10-13-shell-env-active-profile-design.md`,
+  `2026-10-17-profile-switch-session-safety-design.md` (auditoria de perda/corrupção de sessão na
+  troca de perfil: cenários, correções e melhorias pendentes).
 - `docs/superpowers/plans/` — planos de implementação task-by-task, formato de nome
   `YYYY-MM-DD-<topico>.md` (sem sufixo `-design`). Confirmados:
   `2026-07-20-native-app-profile-sync.md`, `2026-07-21-weekly-credits-alert.md`.
@@ -239,6 +268,7 @@ Todas em `UserDefaults.standard`, sem suíte/domínio customizado:
 | `fiveHourAlertThreshold` | `FiveHourAlertThreshold.defaultsKey` (Domain/FiveHourAlert.swift) | Double | 80 | Limiar (%) de disparo do alerta de janela de 5h. `FiveHourAlertThreshold.resolve()` cai para o default se fora de `(0, 100]`. |
 | `fiveHourAlertSoundName` | `FiveHourAlertSound.defaultsKey` (Domain/FiveHourAlert.swift) | String (raw value do enum) | `standard` | Som do alerta de 5h (também reusado pelos alertas semanal e Cursor). Valores: `none, standard, basso, glass, hero, ping, sosumi`. |
 | `relaunchDesktopOnSwitch` | `AppPreferences.relaunchDesktopOnSwitch` (App/MenuBarController.swift) | Bool | `false` | Se `true`, trocar de conta encerra e relança o app desktop nativo do Claude. |
+| `forceQuitDesktopOnSwitch` | `AppPreferences.forceQuitDesktopOnSwitch` (App/MenuBarController.swift) | Bool | `false` | Se `true`, mata o app desktop à força quando ele não fecha em 20 s. Desligado por padrão para não corromper a sessão dele. |
 | `weeklyCreditsAlertThreshold` | `WeeklyCreditsAlertThreshold.defaultsKey` (Domain/FiveHourAlert.swift) | Double | 30 | Limiar (%) de crédito disponível para disparar o alerta semanal, dentro da janela de 24h antes do reset. |
 | `statusBarUsageSource` | `StatusBarUsageSource.defaultsKey` (Domain/StatusBarUsage.swift) | String | `off` | `off\|claude\|cursor\|both`. Migra o Bool legado `showUsageInMenuBar` (`true`→`claude`) na primeira leitura. |
 | `showUsageInMenuBar` | legado | Bool | — | Substituído por `statusBarUsageSource`; ainda lido só para migração. |

@@ -21,6 +21,7 @@ struct PreferencesView: View {
     @AppStorage(FiveHourAlertSound.defaultsKey) private var fiveHourSoundRaw: String = FiveHourAlertSound.default.rawValue
     @AppStorage(WeeklyCreditsAlertThreshold.defaultsKey) private var weeklyCreditsThreshold: Double = WeeklyCreditsAlertThreshold.default
     @AppStorage(AppPreferences.relaunchDesktopOnSwitch) private var relaunchDesktopOnSwitch: Bool = false
+    @AppStorage(AppPreferences.forceQuitDesktopOnSwitch) private var forceQuitDesktopOnSwitch: Bool = false
     @AppStorage(StatusBarUsageSource.defaultsKey) private var statusBarSourceRaw: String = StatusBarUsageSource.off.rawValue
     @AppStorage(CursorMonitoring.defaultsKey) private var cursorMonitoringEnabled: Bool = true
     @AppStorage(CursorBudgetAlertThreshold.defaultsKey) private var cursorBudgetThreshold: Double = CursorBudgetAlertThreshold.default
@@ -82,6 +83,12 @@ struct PreferencesView: View {
                     Text(AppStrings.t("Reabrir o app nativo do Claude ao trocar de conta", "Reopen the native Claude app when switching accounts"))
                 }
                 .help(AppStrings.t("Desativado por padrão. O terminal troca de conta sem reabrir o app nativo.", "Off by default. The terminal switches accounts without reopening the native app."))
+                Toggle(isOn: $forceQuitDesktopOnSwitch) {
+                    Text(AppStrings.t("Forçar encerramento se o app nativo não fechar em 20 s", "Force quit if the native app does not close within 20 s"))
+                }
+                .disabled(!relaunchDesktopOnSwitch)
+                .padding(.leading, 20)
+                .help(AppStrings.t("Desativado por padrão: matar o app no meio de uma gravação pode corromper a sessão dele. Sem isto, a troca avisa e pede para fechar manualmente.", "Off by default: killing the app mid-write can corrupt its session. Without this, the switch warns and asks you to close it manually."))
 
                 Divider()
                 Text(AppStrings.t("Cursor", "Cursor")).font(.title3.weight(.semibold))

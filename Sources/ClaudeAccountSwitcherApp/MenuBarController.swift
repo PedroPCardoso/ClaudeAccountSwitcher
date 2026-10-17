@@ -7,6 +7,10 @@ enum AppPreferences {
     /// chosen profile. Disabled by default so a switch does not disrupt an open desktop app.
     static let relaunchDesktopOnSwitch = "relaunchDesktopOnSwitch"
 
+    /// When enabled, a desktop app that ignores the quit request is force-killed after the grace
+    /// period. Off by default: killing Electron mid-write can corrupt its session storage.
+    static let forceQuitDesktopOnSwitch = "forceQuitDesktopOnSwitch"
+
     /// Legacy Bool key for the menu-bar usage badge. Prefer `StatusBarUsageSource.defaultsKey`.
     static let showUsageInMenuBar = StatusBarUsageSource.legacyDefaultsKey
 
@@ -49,6 +53,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private let locator: ClaudeLocator
     private let loginItem = LoginItemService()
     private let paseo: PaseoIntegration
+    private let keychain = KeychainCredentials()
+    private let desktopClient = SystemDesktopAppClient(allowsForceTerminate: { UserDefaults.standard.bool(forKey: AppPreferences.forceQuitDesktopOnSwitch) })
     private var preferencesWindowController: PreferencesWindowController?
     private var usageWindowController: UsageWindowController?
     private var analysisWindowController: AnalysisWindowController?
@@ -86,7 +92,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         shell = ShellIntegrationManager(appSupport: root)
         migration = MigrationService(store: store)
         paseo = PaseoIntegration(appSupport: root)
-        activation = ActivationService(store: store, paseoIntegration: paseo)
+        activation = ActivationService(store: store, desktopActivator: DesktopAppActivator(client: desktopClient), paseoIntegration: paseo)
         super.init()
     }
 
@@ -142,10 +148,28 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         try? loginItem.setEnabled(true)
     }
 
+    /// `nil` quando o estado ativo é legível e aponta para um perfil existente; senão o motivo.
+    private func activeStateProblem(profiles: [Profile]) -> String? {
+        do {
+            guard let active = try store.active() else { return nil }
+            if !profiles.contains(where: { $0.id == active.id }) {
+                return AppStrings.t("Estado ativo aponta para um perfil que não existe mais", "Active state points to a profile that no longer exists")
+            }
+            return nil
+        } catch {
+            return AppStrings.t("Arquivo de estado ativo ilegível", "Active state file is unreadable")
+        }
+    }
+
     private func rebuildMenu() {
         let menu = NSMenu()
         let profiles = (try? store.list()) ?? []
-        let active = try? store.active()?.id
+        let active = (try? store.active())??.id
+        if let problem = activeStateProblem(profiles: profiles) {
+            // Antes isso virava "nenhum perfil ativo" em silêncio, com o launcher recusando rodar.
+            let repair = NSMenuItem(title: "⚠️ " + problem + AppStrings.t(" — reparar…", " — repair…"), action: #selector(repairActiveState), keyEquivalent: "")
+            repair.target = self; menu.addItem(repair); menu.addItem(.separator())
+        }
         if profiles.isEmpty {
             menu.addItem(withTitle: AppStrings.t("Nenhum perfil importado", "No profiles imported"), action: nil, keyEquivalent: "")
         } else {
@@ -171,6 +195,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         analysisItem.target = self
         analysisItem.toolTip = AppStrings.t("Compara o consumo somado das contas escolhidas: 1 Max vs 2–3 Pro", "Compares summed usage of the chosen accounts: 1 Max vs 2–3 Pro")
         menu.addItem(analysisItem)
+        let locateItem = NSMenuItem(title: AppStrings.t("Onde está minha conversa?…", "Where is my conversation?…"), action: #selector(locateConversation), keyEquivalent: "")
+        locateItem.target = self
+        locateItem.toolTip = AppStrings.t("Procura uma sessão pelo id ou pela pasta em todos os perfis e monta o comando --resume", "Finds a session by id or folder across every profile and builds the --resume command")
+        menu.addItem(locateItem)
+        let maintenanceItem = NSMenuItem(title: AppStrings.t("Manutenção…", "Maintenance…"), action: #selector(runMaintenance), keyEquivalent: "")
+        maintenanceItem.target = self
+        maintenanceItem.toolTip = AppStrings.t("Remove backups antigos, temporários do CLI, diretórios órfãos e credenciais de perfis removidos", "Removes old backups, CLI temp files, orphaned directories and credentials of removed profiles")
+        menu.addItem(maintenanceItem)
 
         if CursorMonitoring.isEnabled() {
             menu.addItem(.separator())
@@ -261,6 +293,74 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         Task { do { let result = try await activation.activate(profile, syncDesktopApp: relaunchDesktopOnSwitch); fiveHourAlert.reset(); rebuildMenu(); notify(activationResult: result) } catch { showError(error) } }
     }
 
+    @objc private func repairActiveState() {
+        let profiles = (try? store.list()) ?? []
+        guard let suggestion = ActiveStateRepair.suggestion(profiles: profiles, launchdDirectory: SystemLaunchdEnvironment().get()) else {
+            showError(NSError(domain: "Claude Account Switcher", code: 6, userInfo: [NSLocalizedDescriptionKey: AppStrings.t("Nenhum perfil disponível para restaurar. Adicione ou importe uma conta.", "No profile available to restore. Add or import an account.")]))
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = AppStrings.t("Reparar estado ativo?", "Repair active state?")
+        alert.informativeText = AppStrings.t(
+            "O arquivo active-profile.json está inválido, e por isso o comando claude no terminal recusa rodar. Sugestão (pela variável do launchd ou pelo último uso): \(suggestion.name)\(suggestion.email.map { " — \($0)" } ?? ""). Você pode escolher outro perfil no menu em vez disso.",
+            "active-profile.json is invalid, so the claude command in the terminal refuses to run. Suggestion (from the launchd variable or last use): \(suggestion.name)\(suggestion.email.map { " — \($0)" } ?? ""). You can pick another profile from the menu instead.")
+        alert.addButton(withTitle: AppStrings.t("Restaurar \(suggestion.name)", "Restore \(suggestion.name)")); alert.addButton(withTitle: AppStrings.t("Cancelar", "Cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task { do { let result = try await activation.activate(suggestion, syncDesktopApp: false); fiveHourAlert.reset(); rebuildMenu(); refreshPreferences(); notify(activationResult: result) } catch { showError(error) } }
+    }
+
+    @objc private func locateConversation() {
+        let profiles = (try? store.list()) ?? []
+        let field = NSTextField(string: ""); field.placeholderString = AppStrings.t("id da sessão ou trecho da pasta (ex.: Develop/api)", "session id or folder fragment (e.g. Develop/api)")
+        field.frame = NSRect(x: 0, y: 0, width: 360, height: 24)
+        let ask = NSAlert(); ask.messageText = AppStrings.t("Onde está minha conversa?", "Where is my conversation?")
+        ask.informativeText = AppStrings.t("Trocar de perfil não move conversas: cada uma fica no perfil em que foi iniciada. Informe o id da sessão ou um trecho do diretório do projeto.", "Switching profiles does not move conversations: each one stays in the profile it was started in. Enter the session id or a fragment of the project directory.")
+        ask.accessoryView = field; ask.addButton(withTitle: AppStrings.t("Procurar", "Search")); ask.addButton(withTitle: AppStrings.t("Cancelar", "Cancel"))
+        NSApp.activate(ignoringOtherApps: true)
+        guard ask.runModal() == .alertFirstButtonReturn else { return }
+        let matches = ConversationLocator.find(query: field.stringValue, profiles: profiles, limit: 8)
+        let result = NSAlert()
+        guard !matches.isEmpty else {
+            result.messageText = AppStrings.t("Nenhuma conversa encontrada", "No conversation found")
+            result.informativeText = AppStrings.t("Nada em \(profiles.count) perfil(is) casa com “\(field.stringValue)”.", "Nothing in \(profiles.count) profile(s) matches “\(field.stringValue)”.")
+            result.runModal(); return
+        }
+        let formatter = DateFormatter(); formatter.dateStyle = .short; formatter.timeStyle = .short
+        result.messageText = AppStrings.t("\(matches.count) conversa(s) encontrada(s)", "\(matches.count) conversation(s) found")
+        result.informativeText = matches.map { match in
+            "• \(match.profile.name) — \(formatter.string(from: match.modifiedAt))\n  \(match.cwd ?? match.file.deletingLastPathComponent().lastPathComponent)\n  \(match.resumeCommand)"
+        }.joined(separator: "\n\n")
+        result.addButton(withTitle: AppStrings.t("Copiar comando da mais recente", "Copy most recent command")); result.addButton(withTitle: AppStrings.t("Fechar", "Close"))
+        if result.runModal() == .alertFirstButtonReturn {
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(matches[0].resumeCommand, forType: .string)
+            notify(AppStrings.t("Comando copiado — cole no terminal", "Command copied — paste it in the terminal"))
+        }
+    }
+
+    @objc private func runMaintenance() {
+        let service = MaintenanceService(store: store, appSupport: store.root, keychain: keychain)
+        let report: MaintenanceReport
+        do { report = try service.scan() } catch { showError(error); return }
+        let alert = NSAlert()
+        guard !report.isEmpty else {
+            alert.messageText = AppStrings.t("Nada para limpar", "Nothing to clean"); alert.informativeText = AppStrings.t("Sem backups antigos, temporários, diretórios órfãos ou credenciais de perfis removidos.", "No old backups, temp files, orphaned directories or credentials of removed profiles.")
+            alert.runModal(); return
+        }
+        alert.messageText = AppStrings.t("Limpar resíduos?", "Clean up leftovers?")
+        alert.informativeText = [
+            AppStrings.t("• \(report.shellBackups.count) backup(s) antigo(s) de dotfiles (mantém os 5 mais recentes de cada)", "• \(report.shellBackups.count) old dotfile backup(s) (keeps the 5 most recent of each)"),
+            AppStrings.t("• \(report.claudeTempFiles.count) temporário(s) .claude.json.tmp.* com mais de 7 dias", "• \(report.claudeTempFiles.count) .claude.json.tmp.* temp file(s) older than 7 days"),
+            AppStrings.t("• \(report.orphanedDirectories.count) diretório(s) de perfil órfão(s) em Profiles/", "• \(report.orphanedDirectories.count) orphaned profile director(ies) in Profiles/"),
+            AppStrings.t("• \(report.staleKeychainServices.count) credencial(is) no Keychain de perfis que já não existem", "• \(report.staleKeychainServices.count) Keychain credential(s) of profiles that no longer exist"),
+            "",
+            AppStrings.t("Perfis, sessões e o .claude.json real não são tocados.", "Profiles, sessions and the real .claude.json are not touched.")
+        ].joined(separator: "\n")
+        alert.alertStyle = .warning; alert.addButton(withTitle: AppStrings.t("Limpar", "Clean")); alert.addButton(withTitle: AppStrings.t("Cancelar", "Cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let removed = service.apply(report)
+        rebuildMenu(); notify(AppStrings.t("Manutenção concluída: \(removed) item(ns) removido(s)", "Maintenance done: \(removed) item(s) removed"))
+    }
+
     @objc private func addAccount() {
         let alert = NSAlert(); alert.messageText = "Adicionar conta Claude"; alert.informativeText = "Escolha o tipo de autenticação. O navegador abrirá para concluir o login."; alert.addButton(withTitle: "Claude Pro/Max"); alert.addButton(withTitle: "Anthropic Console"); alert.addButton(withTitle: "Cancelar")
         let response = alert.runModal(); guard response != .alertThirdButtonReturn else { return }
@@ -289,8 +389,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Copiar"); alert.addButton(withTitle: "Não, logar depois")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
-            _ = try migration.copyDefaultDesktopSessionIfAvailable(into: profile)
+            _ = try migration.copyDefaultDesktopSessionIfAvailable(into: profile, isDesktopRunning: { desktopClient.isRunning() })
             notify(AppStrings.t("Sessão do app nativo copiada para \(profile.name)", "Native app session copied to \(profile.name)"))
+        } catch MigrationError.desktopAppRunning {
+            showError(NSError(domain: "Claude Account Switcher", code: 7, userInfo: [NSLocalizedDescriptionKey: AppStrings.t("Feche o app nativo do Claude antes de copiar a sessão: copiar com ele aberto pode gerar uma sessão corrompida. Depois use “Refazer login” ou troque para o perfil com a reabertura do app ligada.", "Quit the native Claude app before copying the session: copying while it runs can produce a corrupted session. Then use “Sign in again” or switch to the profile with app relaunch enabled.")]))
         } catch { showError(error) }
     }
 
@@ -298,10 +400,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let source = panel.url else { return }
         do {
-            let id = UUID(); let destination = try store.createManagedDirectory(id: id)
-            let entries = try FileManager.default.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
-            for entry in entries { try FileManager.default.copyItem(at: entry, to: destination.appendingPathComponent(entry.lastPathComponent)) }
-            try store.save(Profile(id: id, name: source.lastPathComponent, kind: .custom, directory: destination, health: .unknown)); rebuildMenu(); notify(AppStrings.t("Perfil importado", "Profile imported"))
+            _ = try migration.importDirectory(source); rebuildMenu(); notify(AppStrings.t("Perfil importado", "Profile imported"))
         } catch { showError(error) }
     }
 
@@ -330,8 +429,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         guard !name.isEmpty else { showError(NSError(domain: "Claude Account Switcher", code: 2, userInfo: [NSLocalizedDescriptionKey: "Informe um nome para o perfil."])); return }
-        var updated = profile; updated.name = name
-        do { try store.save(updated); rebuildMenu(); refreshPreferences(); notify(AppStrings.t("Perfil renomeado", "Profile renamed")) } catch { showError(error) }
+        do { try store.update(id: profile.id) { $0.name = name }; rebuildMenu(); refreshPreferences(); notify(AppStrings.t("Perfil renomeado", "Profile renamed")) } catch { showError(error) }
     }
 
     @objc private func openUsage() {
@@ -518,17 +616,20 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             var weeklyCreditsHits: [WeeklyCreditsAlertHit] = []
             for profile in profiles {
                 guard let status = try? self.auth.status(profileDirectory: profile.directory) else { continue }
-                var updated = profile
-                updated.email = status.email ?? profile.email
-                updated.organization = status.organization ?? profile.organization
-                updated.kind = status.kind
-                updated.health = status.isAuthenticated ? .ready : .expired
-                try? self.store.save(updated)
+                // `update` mescla no registro atual: este ciclo pode levar dezenas de segundos
+                // (CLI + rede por perfil) e `save(profile)` reverteria um rename/ativação feito
+                // nesse meio-tempo com o snapshot velho de `profiles`.
+                var updated = (try? self.store.update(id: profile.id) { current in
+                    current.email = status.email ?? current.email
+                    current.organization = status.organization ?? current.organization
+                    current.kind = status.kind
+                    current.health = status.isAuthenticated ? .ready : .expired
+                }) ?? profile
                 if let snapshot = try? await self.usage.fetch(profileDirectory: profile.directory) {
                     var snapshot = snapshot
                     snapshot = ClaudeUsageSnapshot(fetchedAt: snapshot.fetchedAt, plan: snapshot.plan, quotas: snapshot.quotas, source: snapshot.source, tokens: self.usage.tokenUsage(profileDirectory: profile.directory))
                     updated.usage = snapshot
-                    try? self.store.save(updated)
+                    updated = (try? self.store.update(id: profile.id) { $0.usage = snapshot }) ?? updated
                     if updated.id == activeID {
                         let active = updated; let snap = snapshot
                         await MainActor.run { self.checkFiveHourAlert(profile: active, snapshot: snap) }
@@ -705,12 +806,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             do {
                 try self.auth.login(profileDirectory: profile.directory, kind: profile.kind)
                 let status = try self.auth.status(profileDirectory: profile.directory)
-                var updated = profile
-                updated.email = status.email ?? profile.email
-                updated.organization = status.organization ?? profile.organization
-                updated.kind = status.kind
-                updated.health = status.isAuthenticated ? .ready : .expired
-                try self.store.save(updated)
+                let updated = try self.store.update(id: profile.id) { current in
+                    current.email = status.email ?? current.email
+                    current.organization = status.organization ?? current.organization
+                    current.kind = status.kind
+                    current.health = status.isAuthenticated ? .ready : .expired
+                }
                 DispatchQueue.main.async { self.rebuildMenu(); self.refreshPreferences(); self.notify(AppStrings.t("Login atualizado: \(updated.email ?? updated.name)", "Login updated: \(updated.email ?? updated.name)")) }
             } catch { DispatchQueue.main.async { self.showError(error) } }
         }
@@ -724,7 +825,16 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             return
         }
 
-        let alert = NSAlert(); alert.messageText = "Remover perfil?"; alert.informativeText = "A conta \(profile.name) e suas credenciais isoladas serão apagadas deste Mac. Esta ação não remove a conta na Anthropic."; alert.addButton(withTitle: "Remover"); alert.addButton(withTitle: "Cancelar"); alert.alertStyle = .warning
+        let alert = NSAlert(); alert.messageText = AppStrings.t("Remover perfil?", "Remove profile?"); alert.informativeText = AppStrings.t("A conta \(profile.name), suas sessões e a credencial correspondente no Keychain serão apagadas deste Mac. Esta ação não remove a conta na Anthropic.", "The account \(profile.name), its sessions and the matching Keychain credential will be deleted from this Mac. This does not remove the account at Anthropic."); alert.addButton(withTitle: AppStrings.t("Remover", "Remove")); alert.addButton(withTitle: AppStrings.t("Cancelar", "Cancel")); alert.alertStyle = .warning
+        // Remover apaga o diretório onde sessões abertas gravam transcript e `.claude.json`:
+        // elas falhariam no meio ou recriariam arquivos soltos. Avisa para fechá-las antes.
+        let running = SessionActivity.runningSessions(in: profile.directory)
+        if !running.isEmpty {
+            let pids = running.map { String($0.pid) }.joined(separator: ", ")
+            alert.informativeText += "\n\n" + AppStrings.t(
+                "⚠️ \(running.count) sessão(ões) do Claude Code ainda em execução neste perfil (pid \(pids)). Elas perderão acesso ao próprio diretório e podem corromper arquivos ao gravar. Feche-as antes de remover.",
+                "⚠️ \(running.count) Claude Code session(s) still running in this profile (pid \(pids)). They will lose their directory and may corrupt files on write. Close them before removing.")
+        }
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         Task {
@@ -733,6 +843,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                     _ = try await activation.activate(replacement, syncDesktopApp: relaunchDesktopOnSwitch); fiveHourAlert.reset()
                 }
                 try store.remove(profile)
+                // Best-effort: o diretório já foi embora; um item de Keychain que sobrar não é
+                // motivo para falhar a remoção (a manutenção lista órfãos depois).
+                try? keychain.delete(for: profile.directory)
                 rebuildMenu(); refreshPreferences(); notify(AppStrings.t("Perfil removido", "Profile removed"))
             } catch { showError(error) }
         }

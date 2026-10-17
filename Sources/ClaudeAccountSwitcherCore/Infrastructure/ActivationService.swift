@@ -19,7 +19,9 @@ public actor ActivationService {
     public func activate(_ profile: Profile, syncDesktopApp: Bool = true) async throws -> ActivationResult {
         guard FileManager.default.fileExists(atPath: profile.directory.path) else { throw ActivationError.missingDirectory }
         // Captura o estado anterior para desfazer cada passo em caso de falha.
-        let previousActive = try store.active()
+        // Estado ativo corrompido não pode impedir a ativação: é justamente o caminho de reparo.
+        // Tratado como "nenhum ativo" (o rollback apagaria o arquivo inválido, o que é correto).
+        let previousActive = (try? store.active()) ?? nil
         let previousRecord = try store.list().first(where: { $0.id == profile.id })
         let previousSymlinkTarget = paseoIntegration.flatMap { integration -> URL? in
             guard let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: integration.activeConfigDirSymlink.path) else { return nil }
@@ -34,8 +36,16 @@ public actor ActivationService {
             // Propaga o erro do symlink (antes era engolido por `try?`), senão o Paseo poderia
             // ficar apontando para a conta antiga sem qualquer aviso.
             if let paseoIntegration { try paseoIntegration.updateSymlink(to: profile.directory); didUpdateSymlink = true }
-            var candidate = profile; candidate.lastUsedAt = .now; candidate.health = .ready; try store.save(candidate); didSave = true
-            updated = candidate
+            // Atualiza só os campos da ativação no registro ATUAL do store. `profile` é o snapshot
+            // de quem chamou (item de menu, CLI) e pode estar velho: gravá-lo inteiro reverteria um
+            // rename ou o uso buscado pelo refresh nesse meio-tempo.
+            if previousRecord != nil {
+                updated = try store.update(id: profile.id) { $0.lastUsedAt = .now; $0.health = .ready }
+            } else {
+                var candidate = profile; candidate.lastUsedAt = .now; candidate.health = .ready; try store.save(candidate)
+                updated = candidate
+            }
+            didSave = true
         } catch {
             rollback(previousActive: previousActive, previousRecord: previousRecord, previousSymlinkTarget: previousSymlinkTarget,
                      didSetActive: didSetActive, didSetLaunchd: didSetLaunchd, didUpdateSymlink: didUpdateSymlink, didSave: didSave)

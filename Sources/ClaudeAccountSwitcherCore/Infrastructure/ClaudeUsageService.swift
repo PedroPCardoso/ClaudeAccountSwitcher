@@ -80,7 +80,7 @@ public struct UsageRetryPolicy: Sendable {
     }
 }
 
-/// Reads the same OAuth usage endpoint used by 9router. The endpoint is a
+/// Reads the Claude Code OAuth usage endpoint. The endpoint is a
 /// consumer endpoint (not the public Anthropic API) and may change upstream.
 public struct ClaudeUsageService: Sendable {
     private let transport: UsageTransport
@@ -222,9 +222,7 @@ public struct ClaudeUsageService: Sendable {
     }
 
     private func accessToken(profileDirectory: URL) -> String? {
-        let digest = SHA256.hash(data: Data(profileDirectory.standardizedFileURL.path.utf8))
-        let suffix = digest.prefix(4).map { String(format: "%02x", $0) }.joined()
-        let service = "Claude Code-credentials-\(suffix)"
+        let service = KeychainCredentials.serviceName(for: profileDirectory)
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         process.arguments = ["find-generic-password", "-s", service, "-a", NSUserName(), "-w"]
         let pipe = Pipe(); process.standardOutput = pipe; process.standardError = Pipe()

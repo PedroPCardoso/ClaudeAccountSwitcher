@@ -10,12 +10,16 @@ public enum DesktopAppSyncResult: Equatable, Sendable {
 
 public actor DesktopAppActivator {
     private let client: DesktopAppClient
-    public init(client: DesktopAppClient = SystemDesktopAppClient()) { self.client = client }
+    /// Espera generosa pelo encerramento gracioso: o Electron precisa fechar janelas e dar flush
+    /// em LevelDB/SQLite. 5 s era curto o bastante para cair no `forceTerminate` com frequência.
+    public static let defaultQuitTimeout: TimeInterval = 20
+    private let quitTimeout: TimeInterval
+    public init(client: DesktopAppClient = SystemDesktopAppClient(), quitTimeout: TimeInterval = DesktopAppActivator.defaultQuitTimeout) { self.client = client; self.quitTimeout = quitTimeout }
 
     public func sync(to profile: Profile) -> DesktopAppSyncResult {
         guard let bundleURL = client.locateBundle() else { return .skipped(.appNotInstalled) }
         if client.isRunning() {
-            guard client.terminate(timeout: 5) else { return .failed("timed out waiting for the desktop app to quit") }
+            guard client.terminate(timeout: quitTimeout) else { return .failed("timed out waiting for the desktop app to quit; close it manually and switch again") }
         }
         let directory = profile.desktopDirectory
         do {

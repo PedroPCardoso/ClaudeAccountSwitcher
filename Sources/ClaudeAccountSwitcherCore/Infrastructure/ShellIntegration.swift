@@ -8,6 +8,10 @@ public struct ShellIntegrationManager: Sendable {
 
     public func launcherURL() -> URL { appSupport.appendingPathComponent("bin/claude") }
     public func casURL() -> URL { appSupport.appendingPathComponent("bin/cas") }
+    /// Script sourceado por zsh/bash que exporta `CLAUDE_CONFIG_DIR` do perfil ativo em todo shell.
+    public func envScriptURL() -> URL { appSupport.appendingPathComponent("bin/cas-env.sh") }
+    /// Equivalente para fish (sintaxe própria).
+    public func fishEnvScriptURL() -> URL { appSupport.appendingPathComponent("bin/cas-env.fish") }
 
     /// Quota uma string para uso seguro dentro de aspas simples no shell POSIX. Fecha a
     /// aspa, insere um apóstrofo escapado e reabre (`it's` → `'it'\''s'`), tratando o path
@@ -24,9 +28,18 @@ public struct ShellIntegrationManager: Sendable {
         // O `cas` é um binário compilado (vive no bundle do .app), não um script gerado: expomos
         // ele no PATH gerenciado via symlink, sempre re-apontando para o binário atual do bundle.
         if let casBinary { try installCAS(from: casBinary) }
+        // Além do PATH, o bloco sourceia um script que exporta CLAUDE_CONFIG_DIR do perfil ativo no
+        // próprio shell. O launcher `bin/claude` já resolve o perfil sozinho, mas instaladores de
+        // terceiros (`npx <ferramenta> setup`, plugins, skills) rodam fora dele e só enxergam a
+        // variável se ela estiver no ambiente do shell — sem isso gravam em ~/.claude.
+        let stateURL = appSupport.appendingPathComponent("active-profile.json")
+        try renderEnvScript(stateURL: stateURL).data(using: .utf8)!.write(to: envScriptURL(), options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: envScriptURL().path)
+        try renderFishEnvScript(stateURL: stateURL).data(using: .utf8)!.write(to: fishEnvScriptURL(), options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fishEnvScriptURL().path)
         // zsh e bash usam a mesma sintaxe POSIX; fish tem a sua própria.
-        let posixBlock = "\(Self.startMarker)\nexport PATH=\(Self.singleQuoted(bin.path)):\"$PATH\"\n\(Self.endMarker)\n"
-        let fishBlock = "\(Self.startMarker)\nset -gx PATH \(Self.singleQuoted(bin.path)) $PATH\n\(Self.endMarker)\n"
+        let posixBlock = "\(Self.startMarker)\nexport PATH=\(Self.singleQuoted(bin.path)):\"$PATH\"\n[ -r \(Self.singleQuoted(envScriptURL().path)) ] && . \(Self.singleQuoted(envScriptURL().path))\n\(Self.endMarker)\n"
+        let fishBlock = "\(Self.startMarker)\nset -gx PATH \(Self.singleQuoted(bin.path)) $PATH\ntest -r \(Self.singleQuoted(fishEnvScriptURL().path)); and source \(Self.singleQuoted(fishEnvScriptURL().path))\n\(Self.endMarker)\n"
         // zsh é o shell padrão do macOS: cria os arquivos se não existirem.
         for filename in [".zprofile", ".zshrc"] {
             try installBlock(posixBlock, into: home.appendingPathComponent(filename), createIfMissing: true)
@@ -76,6 +89,9 @@ public struct ShellIntegrationManager: Sendable {
         if FileManager.default.fileExists(atPath: cas.path) || (try? FileManager.default.destinationOfSymbolicLink(atPath: cas.path)) != nil {
             try FileManager.default.removeItem(at: cas)
         }
+        for script in [envScriptURL(), fishEnvScriptURL()] where FileManager.default.fileExists(atPath: script.path) {
+            try FileManager.default.removeItem(at: script)
+        }
     }
 
     public func renderLauncher(stateURL: URL, officialBinary: URL) -> String {
@@ -90,6 +106,68 @@ case "$CONFIG_DIR" in file://*) CONFIG_DIR="${CONFIG_DIR#file://}";; esac
 if [ -z "$CONFIG_DIR" ] || [ ! -d "$CONFIG_DIR" ]; then echo 'Claude Account Switcher: diretório do perfil indisponível' >&2; exit 78; fi
 export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
 exec "$OFFICIAL" "$@"
+"""
+    }
+
+    /// Script POSIX sourceado por zsh e bash. Exporta `CLAUDE_CONFIG_DIR` do perfil ativo ao carregar
+    /// e, em shells interativos, reexporta antes de cada prompt quando `active-profile.json` mudou —
+    /// assim uma troca pelo menu ou por `cas switch` alcança shells já abertos, igual ao launcher.
+    /// Usa a mesma resolução do launcher (plutil + `file://`), tolerante a falhas: nunca quebra o
+    /// shell do usuário, só deixa de exportar.
+    public func renderEnvScript(stateURL: URL) -> String {
+        """
+# Gerado pelo Claude Account Switcher — reescrito a cada reparo da integração; não edite.
+# Exporta CLAUDE_CONFIG_DIR do perfil ativo no shell para que instaladores de terceiros
+# (npx <ferramenta> setup, plugins, skills) gravem no perfil, e não em ~/.claude.
+CAS_STATE=\(Self.singleQuoted(stateURL.path))
+cas_env() {
+  [ -f "$CAS_STATE" ] || return 0
+  _cas_dir=$(/usr/bin/plutil -extract directory raw -o - "$CAS_STATE" 2>/dev/null) || { unset _cas_dir; return 0; }
+  case "$_cas_dir" in file://*) _cas_dir="${_cas_dir#file://}";; esac
+  if [ -n "$_cas_dir" ] && [ -d "$_cas_dir" ]; then
+    export CLAUDE_CONFIG_DIR="$_cas_dir"
+    _cas_state_seen=$(_cas_state_mtime)
+  fi
+  unset _cas_dir
+}
+_cas_state_mtime() { /usr/bin/stat -f %m "$CAS_STATE" 2>/dev/null; }
+_cas_env_refresh() {
+  [ -f "$CAS_STATE" ] || return 0
+  _cas_now=$(_cas_state_mtime)
+  if [ "$_cas_now" != "${_cas_state_seen:-}" ]; then cas_env; fi
+  unset _cas_now
+}
+cas_env
+# BASH_VERSION primeiro: o bash sempre a define, enquanto ZSH_VERSION pode ter vazado exportada.
+if [ -n "${BASH_VERSION:-}" ]; then
+  case ";${PROMPT_COMMAND:-};" in *";_cas_env_refresh;"*) ;; *) PROMPT_COMMAND="_cas_env_refresh${PROMPT_COMMAND:+;$PROMPT_COMMAND}";; esac
+elif [ -n "${ZSH_VERSION:-}" ]; then
+  autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook precmd _cas_env_refresh
+fi
+"""
+    }
+
+    /// Versão fish do script de ambiente: exporta ao carregar e reexporta a cada prompt quando o
+    /// estado mudou.
+    public func renderFishEnvScript(stateURL: URL) -> String {
+        """
+# Gerado pelo Claude Account Switcher — reescrito a cada reparo da integração; não edite.
+set -g CAS_STATE \(Self.singleQuoted(stateURL.path))
+function cas_env
+  test -f "$CAS_STATE"; or return 0
+  set -l dir (/usr/bin/plutil -extract directory raw -o - "$CAS_STATE" 2>/dev/null); or return 0
+  set dir (string replace -r '^file://' '' -- "$dir")
+  if test -n "$dir" -a -d "$dir"
+    set -gx CLAUDE_CONFIG_DIR "$dir"
+    set -g _cas_state_seen (/usr/bin/stat -f %m "$CAS_STATE" 2>/dev/null)
+  end
+end
+function _cas_env_refresh --on-event fish_prompt
+  test -f "$CAS_STATE"; or return 0
+  set -l now (/usr/bin/stat -f %m "$CAS_STATE" 2>/dev/null)
+  if test "$now" != "$_cas_state_seen"; cas_env; end
+end
+cas_env
 """
     }
 

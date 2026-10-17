@@ -96,6 +96,21 @@ enum ProfileStoreTests {
             ,("cas parses list/current/switch and rejects unknown or missing args", testCASParser)
             ,("cas switch activates the resolved profile and pushes its directory to launchd", testCASSwitchActivatesResolvedProfile)
             ,("cas is installed into the managed bin and removed on cleanup", testShellIntegrationInstallsCAS)
+            ,("env script exports the active profile in sh/zsh/bash and follows a switch", testShellEnvScriptExportsActiveProfile)
+            ,("activation preserves edits made after the menu snapshot (no lost update)", testActivationPreservesConcurrentEdits)
+            ,("store update merges concurrent writers field by field", testStoreUpdateMergesConcurrentWriters)
+            ,("launcher stays consistent under rapid concurrent switches", testLauncherSurvivesConcurrentSwitches)
+            ,("launcher and env script fail closed on corrupt or dangling active state", testLauncherFailsClosedOnCorruptState)
+            ,("store ignores stale temp files and keeps state files private", testStoreIgnoresStaleTemporaryFiles)
+            ,("migration imports the global ~/.claude.json into the profile", testMigrationImportsGlobalConfig)
+            ,("session activity reports only live claude processes of a profile", testSessionActivityDetectsLiveProcesses)
+            ,("active state repair prefers the launchd directory, then the most recently used", testActiveStateRepairSuggestion)
+            ,("keychain services parse from a dump and stale ones are those of unknown directories", testKeychainServiceParsingAndStale)
+            ,("desktop copy refuses while the app runs and stages the copy atomically", testDesktopCopyRefusesWhileRunningAndStages)
+            ,("import directory brings the global config for ~/.claude and rejects symlinks cleanly", testImportDirectory)
+            ,("conversation locator finds a session across profiles by id, slug and cwd", testConversationLocator)
+            ,("maintenance scan lists old backups, stale temp files and orphans; apply removes them", testMaintenanceScanAndApply)
+            ,("desktop activator waits the configured quit timeout without force quitting", testDesktopActivatorQuitTimeout)
         ]
         var failures = 0
         for (name, test) in tests {
@@ -696,6 +711,356 @@ enum ProfileStoreTests {
         try check((try? FileManager.default.destinationOfSymbolicLink(atPath: installed.path)) == nil, "remove did not delete cas from the managed bin")
     }
 
+    static func testShellEnvScriptExportsActiveProfile() throws {
+        let root = try temporaryRoot(); let app = root.appendingPathComponent("app-support")
+        let store = try ProfileStore(root: app)
+        let firstDir = root.appendingPathComponent("first profile"); let secondDir = root.appendingPathComponent("second profile")
+        try FileManager.default.createDirectory(at: firstDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondDir, withIntermediateDirectories: true)
+        let first = Profile(name: "First", directory: firstDir); let second = Profile(name: "Second", directory: secondDir)
+        try store.save(first); try store.save(second); try store.setActive(ActiveProfile(id: first.id, directory: first.directory))
+        let shell = ShellIntegrationManager(appSupport: app); let home = root.appendingPathComponent("home"); try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try shell.install(home: home, officialBinary: URL(fileURLWithPath: "/usr/bin/env"))
+        let script = shell.envScriptURL()
+        try check(FileManager.default.fileExists(atPath: script.path), "install did not write the env script")
+        // O bloco instalado precisa sourcear o script (é ele que leva a variável ao shell).
+        let zshrc = try String(contentsOf: home.appendingPathComponent(".zshrc"), encoding: .utf8)
+        try check(zshrc.contains(". '\(script.path)'"), "zshrc block does not source the env script")
+        let fish = home.appendingPathComponent(".config/fish/config.fish")
+        try check(!FileManager.default.fileExists(atPath: fish.path) && FileManager.default.fileExists(atPath: shell.fishEnvScriptURL().path), "fish script should exist even when config.fish is absent")
+        // Sourceado em sh, zsh e bash, exporta o diretório do perfil ativo.
+        for interpreter in ["/bin/sh", "/bin/zsh", "/bin/bash"] {
+            let result = try ProcessRunner().run(executable: URL(fileURLWithPath: interpreter), arguments: ["-c", ". \"$1\"; printf '%s' \"$CLAUDE_CONFIG_DIR\"", "cas", script.path])
+            try check(result.stdout == firstDir.path, "\(interpreter) did not export the active profile: stdout=\(result.stdout) stderr=\(result.stderr)")
+        }
+        // Após uma troca, o refresh de prompt reexporta (o mtime do estado muda).
+        try store.setActive(ActiveProfile(id: second.id, directory: second.directory))
+        for (index, interpreter) in ["/bin/zsh", "/bin/bash"].enumerated() {
+            // Força um mtime diferente do visto no source (a troca real pode cair no mesmo segundo);
+            // um timestamp por interpretador, senão o segundo veria o mtime que o primeiro já deixou.
+            let body = ". \"$1\"; CLAUDE_CONFIG_DIR=stale; /usr/bin/touch -t 2020010\(index + 1)0000 \"$2\"; _cas_env_refresh; printf '%s' \"$CLAUDE_CONFIG_DIR\""
+            let result = try ProcessRunner().run(executable: URL(fileURLWithPath: interpreter), arguments: ["-c", body, "cas", script.path, store.activeURL.path])
+            try check(result.stdout == secondDir.path, "\(interpreter) refresh did not follow the switch: stdout=\(result.stdout) stderr=\(result.stderr)")
+        }
+        try shell.remove(home: home)
+        try check(!FileManager.default.fileExists(atPath: script.path) && !FileManager.default.fileExists(atPath: shell.fishEnvScriptURL().path), "remove did not delete the env scripts")
+    }
+
+    // MARK: - Troca de perfil: perda/corrupção de estado
+
+    static func testActivationPreservesConcurrentEdits() async throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root)
+        let dir = root.appendingPathComponent("config"); try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let stale = Profile(name: "Old name", directory: dir); try store.save(stale)
+        // Entre montar o menu (snapshot `stale`) e o clique, o refresh de 60s gravou uso/email
+        // novos e o usuário renomeou o perfil. A ativação não pode reverter nada disso.
+        var fresh = stale; fresh.name = "New name"; fresh.email = "me@example.com"
+        fresh.usage = ClaudeUsageSnapshot(quotas: [ClaudeQuota(kind: .fiveHour, key: "Janela 5h", usedPercent: 42)], source: "test")
+        try store.save(fresh)
+        let service = ActivationService(store: store, launchd: FakeLaunchd())
+        let result = try await service.activate(stale, syncDesktopApp: false)
+        let persisted = try store.list().first(where: { $0.id == stale.id })
+        try check(persisted?.name == "New name", "activation reverted a rename made after the menu snapshot")
+        try check(persisted?.email == "me@example.com", "activation reverted the email refreshed after the menu snapshot")
+        try check(persisted?.usage?.quotas.first?.usedPercent == 42, "activation wiped the usage snapshot fetched after the menu snapshot")
+        try check(persisted?.lastUsedAt != nil && persisted?.health == .ready, "activation did not record lastUsedAt/health")
+        try check(result.profile.name == "New name", "activation result should carry the fresh record, not the stale one")
+        try check(try store.active()?.id == stale.id, "profile was not activated")
+    }
+
+    static func testStoreUpdateMergesConcurrentWriters() throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root)
+        let dir = root.appendingPathComponent("config"); try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let profile = Profile(name: "", directory: dir); try store.save(profile)
+        // 100 escritores concorrentes, cada um lendo-modificando-gravando via update(id:).
+        // Com save(struct inteiro) alguns incrementos se perderiam; com update nenhum.
+        let group = DispatchGroup(); let errors = NSLock(); var failures = 0
+        for _ in 0..<100 {
+            DispatchQueue.global().async(group: group) {
+                do { _ = try store.update(id: profile.id) { $0.name += "x" } }
+                catch { errors.lock(); failures += 1; errors.unlock() }
+            }
+        }
+        group.wait()
+        try check(failures == 0, "update threw for an existing profile")
+        try check(try store.list().first(where: { $0.id == profile.id })?.name.count == 100, "lost update: expected 100 merged writes, got \(try store.list().first(where: { $0.id == profile.id })?.name.count ?? -1)")
+        var threw = false
+        do { _ = try store.update(id: UUID()) { $0.name = "ghost" } } catch StoreError.missingProfile { threw = true }
+        try check(threw, "update must fail for an unknown profile instead of creating one")
+        try check(try store.list().count == 1, "update created a profile for an unknown id")
+    }
+
+    static func testLauncherSurvivesConcurrentSwitches() async throws {
+        let root = try temporaryRoot(); let app = root.appendingPathComponent("app-support")
+        let store = try ProfileStore(root: app)
+        let firstDir = root.appendingPathComponent("first profile"); let secondDir = root.appendingPathComponent("second profile")
+        try FileManager.default.createDirectory(at: firstDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondDir, withIntermediateDirectories: true)
+        let first = Profile(name: "First", directory: firstDir); let second = Profile(name: "Second", directory: secondDir)
+        try store.save(first); try store.save(second)
+        let shell = ShellIntegrationManager(appSupport: app); let home = root.appendingPathComponent("home"); try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try shell.install(home: home, officialBinary: URL(fileURLWithPath: "/usr/bin/env"))
+        let service = ActivationService(store: store, launchd: FakeLaunchd())
+        _ = try await service.activate(first, syncDesktopApp: false)
+        // Troca 60 vezes em background enquanto o launcher é invocado repetidamente: cada
+        // invocação deve resolver UM dos dois diretórios — nunca JSON parcial (exit 78) nem
+        // um caminho misturado. Também confere que o estado final é coerente.
+        let switching = Task.detached {
+            for i in 0..<60 { _ = try await service.activate(i % 2 == 0 ? second : first, syncDesktopApp: false) }
+        }
+        var seen = Set<String>()
+        for _ in 0..<40 {
+            let result: ProcessResult
+            do { result = try ProcessRunner().run(executable: shell.launcherURL()) }
+            catch { throw TestFailure.failed("launcher failed mid-switch: \(error)") }
+            guard let line = result.stdout.split(separator: "\n").first(where: { $0.hasPrefix("CLAUDE_CONFIG_DIR=") }) else { throw TestFailure.failed("launcher did not export CLAUDE_CONFIG_DIR") }
+            let value = String(line.dropFirst("CLAUDE_CONFIG_DIR=".count))
+            try check(value == firstDir.path || value == secondDir.path, "launcher resolved an inconsistent directory: \(value)")
+            seen.insert(value)
+        }
+        try await switching.value
+        let active = try store.active()
+        try check(active?.id == first.id, "final active profile should be First after an even number of switches")
+        let final = try ProcessRunner().run(executable: shell.launcherURL())
+        try check(final.stdout.contains("CLAUDE_CONFIG_DIR=\(firstDir.path)"), "launcher disagrees with the store after the switch storm")
+        try check(try store.list().count == 2, "switch storm corrupted profiles.json")
+        _ = seen
+    }
+
+    static func testLauncherFailsClosedOnCorruptState() throws {
+        let root = try temporaryRoot(); let app = root.appendingPathComponent("app-support")
+        let store = try ProfileStore(root: app)
+        let dir = root.appendingPathComponent("config"); try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let profile = Profile(name: "P", directory: dir); try store.save(profile); try store.setActive(ActiveProfile(id: profile.id, directory: dir))
+        let shell = ShellIntegrationManager(appSupport: app); let home = root.appendingPathComponent("home"); try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try shell.install(home: home, officialBinary: URL(fileURLWithPath: "/usr/bin/env"))
+        func launcherExit() -> Int32? {
+            do { _ = try ProcessRunner().run(executable: shell.launcherURL()); return 0 }
+            catch ProcessRunnerError.failed(let result) { return result.exitCode }
+            catch { return nil }
+        }
+        func envScriptExport() throws -> String {
+            // Começa sem a variável: o script não pode exportar lixo nem herdar valor antigo.
+            let result = try ProcessRunner().run(executable: URL(fileURLWithPath: "/usr/bin/env"), arguments: ["-u", "CLAUDE_CONFIG_DIR", "/bin/sh", "-c", ". \"$1\"; printf '%s' \"${CLAUDE_CONFIG_DIR:-unset}\"", "cas", shell.envScriptURL().path])
+            return result.stdout
+        }
+        try check(launcherExit() == 0, "precondition: launcher should work with a valid state")
+        // 1) JSON truncado (gravação interrompida sem rename atômico, ou edição manual).
+        try "{\"id\": \"".write(to: store.activeURL, atomically: true, encoding: .utf8)
+        try check(launcherExit() == 78, "launcher must fail closed (exit 78) on a corrupt state file, never fall back to ~/.claude")
+        try check(try envScriptExport() == "unset", "env script exported something from a corrupt state file")
+        var threw = false
+        do { _ = try store.active() } catch StoreError.corruptState { threw = true }
+        try check(threw, "store must surface a corrupt active-profile.json instead of returning nil silently")
+        // 2) Estado válido apontando para um diretório que já não existe (perfil apagado por fora).
+        let gone = root.appendingPathComponent("gone"); try FileManager.default.createDirectory(at: gone, withIntermediateDirectories: true)
+        try store.setActive(ActiveProfile(id: profile.id, directory: gone)); try FileManager.default.removeItem(at: gone)
+        try check(launcherExit() == 78, "launcher must refuse a dangling profile directory")
+        try check(try envScriptExport() == "unset", "env script exported a dangling directory")
+        // 3) Estado ausente.
+        try FileManager.default.removeItem(at: store.activeURL)
+        try check(launcherExit() == 78, "launcher must refuse to run without an active profile")
+        try check(try envScriptExport() == "unset", "env script exported without an active profile")
+        try check(try store.active() == nil, "store should report no active profile when the file is absent")
+    }
+
+    static func testStoreIgnoresStaleTemporaryFiles() throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root)
+        let id = UUID(); let dir = try store.createManagedDirectory(id: id)
+        let profile = Profile(id: id, name: "P", directory: dir); try store.save(profile)
+        // Restos de um atomicWrite interrompido (crash entre write e rename) e lixo não-UUID em
+        // Profiles/ não podem afetar a leitura nem aparecer como órfãos.
+        try "garbage".write(to: root.appendingPathComponent("profiles.json.tmp-DEAD"), atomically: true, encoding: .utf8)
+        try "garbage".write(to: root.appendingPathComponent("active-profile.json.tmp-DEAD"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: store.profilesDirectory.appendingPathComponent("not-a-uuid"), withIntermediateDirectories: true)
+        try check(try store.list().count == 1, "stale temp files affected profile listing")
+        try check(try store.orphanedProfileDirectories().isEmpty, "non-UUID junk was reported as an orphaned profile")
+        // Arquivos de estado preexistentes com permissão larga (versões antigas gravavam 644)
+        // devem voltar a 600 na próxima gravação — contêm o caminho das credenciais.
+        try store.setActive(ActiveProfile(id: profile.id, directory: dir))
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: store.activeURL.path)
+        try store.setActive(ActiveProfile(id: profile.id, directory: dir))
+        let perms = (try FileManager.default.attributesOfItem(atPath: store.activeURL.path)[.posixPermissions] as? Int) ?? -1
+        try check(perms == 0o600, "active-profile.json kept permissions \(String(perms, radix: 8)) after rewrite; expected 600")
+    }
+
+    static func testMigrationImportsGlobalConfig() throws {
+        let home = try temporaryRoot(); let source = home.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("projects"), withIntermediateDirectories: true)
+        // Sem CLAUDE_CONFIG_DIR o Claude Code guarda `~/.claude.json` FORA de `~/.claude`
+        // (MCP servers de usuário, projetos confiáveis, onboarding). Com o perfil ativo ele passa a
+        // ler `<perfil>/.claude.json`; importar só a pasta perde tudo isso.
+        try "{\"mcpServers\":{}}".write(to: home.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        let store = try ProfileStore(root: home.appendingPathComponent("managed"))
+        let plan = try MigrationService(store: store).preview(home: home)
+        let report = try MigrationService(store: store).execute(plan)
+        let copied = report.imported[0].appendingPathComponent(".claude.json")
+        try check(try String(contentsOf: copied, encoding: .utf8) == "{\"mcpServers\":{}}", "global ~/.claude.json was not imported into the profile")
+        try check(FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude.json").path), "source ~/.claude.json was moved instead of copied")
+        // Quando a pasta já traz o seu próprio .claude.json (ex.: ~/.claude-work usado via
+        // CLAUDE_CONFIG_DIR), o arquivo da pasta vence e o global não o sobrescreve.
+        let work = home.appendingPathComponent(".claude-work"); try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        try "own".write(to: work.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        let store2 = try ProfileStore(root: home.appendingPathComponent("managed-2"))
+        let report2 = try MigrationService(store: store2).execute(try MigrationService(store: store2).preview(home: home))
+        let workImported = report2.imported.first(where: { (try? String(contentsOf: $0.appendingPathComponent(".claude.json"), encoding: .utf8)) == "own" })
+        try check(workImported != nil, "a source with its own .claude.json must keep it")
+    }
+
+    static func testSessionActivityDetectsLiveProcesses() throws {
+        let root = try temporaryRoot(); let sessions = root.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try check(SessionActivity.runningSessions(in: root).isEmpty, "empty sessions directory should report nothing")
+        // Processo vivo (este teste) e um pid que já terminou (filho encerrado).
+        let dead = Process(); dead.executableURL = URL(fileURLWithPath: "/usr/bin/true"); try dead.run(); dead.waitUntilExit()
+        let me = ProcessInfo.processInfo.processIdentifier
+        try "{\"pid\":\(me),\"sessionId\":\"abc\",\"cwd\":\"/tmp/work\",\"status\":\"idle\"}".write(to: sessions.appendingPathComponent("\(me).json"), atomically: true, encoding: .utf8)
+        try "{\"pid\":\(dead.processIdentifier),\"sessionId\":\"dead\"}".write(to: sessions.appendingPathComponent("\(dead.processIdentifier).json"), atomically: true, encoding: .utf8)
+        try "not json".write(to: sessions.appendingPathComponent("garbage.json"), atomically: true, encoding: .utf8)
+        try "{}".write(to: sessions.appendingPathComponent("\(me).deadbeef.key"), atomically: true, encoding: .utf8)
+        let live = SessionActivity.runningSessions(in: root)
+        try check(live.count == 1, "expected exactly one live session, got \(live.count)")
+        try check(live.first?.pid == me && live.first?.sessionID == "abc" && live.first?.cwd == "/tmp/work", "live session fields were not parsed")
+        try check(SessionActivity.runningSessions(in: root.appendingPathComponent("missing")).isEmpty, "missing profile directory should report nothing")
+    }
+
+    static func testActiveStateRepairSuggestion() throws {
+        let a = Profile(name: "A", directory: URL(fileURLWithPath: "/tmp/cas/a/config"), lastUsedAt: Date(timeIntervalSince1970: 100))
+        let b = Profile(name: "B", directory: URL(fileURLWithPath: "/tmp/cas/b/config"), lastUsedAt: Date(timeIntervalSince1970: 200))
+        let c = Profile(name: "C", directory: URL(fileURLWithPath: "/tmp/cas/c/config"))
+        try check(ActiveStateRepair.suggestion(profiles: [a, b, c], launchdDirectory: "/tmp/cas/a/config/")?.id == a.id, "launchd directory should win even with a trailing slash")
+        try check(ActiveStateRepair.suggestion(profiles: [a, b, c], launchdDirectory: "/elsewhere")?.id == b.id, "unknown launchd directory should fall back to the most recently used")
+        try check(ActiveStateRepair.suggestion(profiles: [a, b, c], launchdDirectory: nil)?.id == b.id, "nil launchd should pick the most recently used")
+        try check(ActiveStateRepair.suggestion(profiles: [], launchdDirectory: nil) == nil, "no profiles → no suggestion")
+    }
+
+    static func testKeychainServiceParsingAndStale() throws {
+        let dirA = URL(fileURLWithPath: "/tmp/cas/a/config"); let dirB = URL(fileURLWithPath: "/tmp/cas/b/config")
+        let a = KeychainCredentials.serviceName(for: dirA); let b = KeychainCredentials.serviceName(for: dirB)
+        try check(a.hasPrefix("Claude Code-credentials-") && a.count == "Claude Code-credentials-".count + 8 && a != b, "service name must be prefix + 8 hex chars, distinct per directory")
+        try check(KeychainCredentials.serviceName(for: URL(fileURLWithPath: "/tmp/cas/a/config/")) == a, "trailing slash must not change the service name")
+        let dump = """
+        keychain: "/Users/x/Library/Keychains/login.keychain-db"
+            "svce"<blob>="\(a)"
+            "acct"<blob>="x"
+            "svce"<blob>="Claude Code-credentials"
+            "svce"<blob>="Claude Code-credentials-deadbeef"
+            "svce"<blob>="Cursor Safe Storage"
+            "svce"<blob>="\(a)"
+        """
+        let services = KeychainCredentials.parseServices(dump: dump)
+        try check(services == [a, "Claude Code-credentials-deadbeef"].sorted(), "parse should keep only suffixed Claude Code services, deduplicated: \(services)")
+        try check(KeychainCredentials.stale(services: services, knownDirectories: [dirA, dirB]) == ["Claude Code-credentials-deadbeef"], "stale must exclude services of known directories")
+    }
+
+    static func testDesktopCopyRefusesWhileRunningAndStages() throws {
+        let home = try temporaryRoot()
+        let source = home.appendingPathComponent("Library/Application Support/Claude")
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("Local Storage/leveldb"), withIntermediateDirectories: true)
+        try "cookie-bytes".write(to: source.appendingPathComponent("Cookies"), atomically: true, encoding: .utf8)
+        try "log".write(to: source.appendingPathComponent("Local Storage/leveldb/000001.log"), atomically: true, encoding: .utf8)
+        let store = try ProfileStore(root: home.appendingPathComponent("managed"))
+        let id = UUID(); let dir = try store.createManagedDirectory(id: id); let profile = Profile(id: id, name: "P", directory: dir)
+        var threw = false
+        do { _ = try MigrationService(store: store).copyDefaultDesktopSessionIfAvailable(into: profile, home: home, isDesktopRunning: { true }) }
+        catch MigrationError.desktopAppRunning { threw = true }
+        try check(threw, "copy must refuse while the desktop app is running")
+        try check(!FileManager.default.fileExists(atPath: profile.desktopDirectory.path), "nothing may be created when the copy is refused")
+        let copied = try MigrationService(store: store).copyDefaultDesktopSessionIfAvailable(into: profile, home: home, isDesktopRunning: { false })
+        try check(copied && MigrationService.hasRealDesktopSession(at: profile.desktopDirectory), "copy did not produce a real session")
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: dir.deletingLastPathComponent().path)
+        try check(!siblings.contains(where: { $0.hasPrefix(".desktop.tmp-") }), "staging directory was left behind: \(siblings)")
+        // Um `desktop` pré-existente mas sem sessão real (pasta vazia criada pelo sync) não bloqueia a cópia.
+        let other = Profile(id: UUID(), name: "Q", directory: try store.createManagedDirectory(id: UUID()))
+        try FileManager.default.createDirectory(at: other.desktopDirectory, withIntermediateDirectories: true)
+        try check(try MigrationService(store: store).copyDefaultDesktopSessionIfAvailable(into: other, home: home), "empty pre-existing desktop dir must be replaced by the copy")
+        try check(MigrationService.hasRealDesktopSession(at: other.desktopDirectory), "copy into a pre-existing empty desktop dir failed")
+    }
+
+    static func testImportDirectory() throws {
+        let home = try temporaryRoot()
+        let dotClaude = home.appendingPathComponent(".claude"); try FileManager.default.createDirectory(at: dotClaude.appendingPathComponent("projects"), withIntermediateDirectories: true)
+        try "global".write(to: home.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        let store = try ProfileStore(root: home.appendingPathComponent("managed"))
+        let imported = try MigrationService(store: store).importDirectory(dotClaude, home: home)
+        try check(try String(contentsOf: imported.directory.appendingPathComponent(".claude.json"), encoding: .utf8) == "global", "import of ~/.claude must bring ~/.claude.json")
+        try check(FileManager.default.fileExists(atPath: imported.directory.appendingPathComponent("projects").path), "import did not copy the folder contents")
+        try check(try store.list().count == 1 && imported.name == ".claude", "imported profile not saved with the folder name")
+        // Outra pasta qualquer: não recebe o global; symlink dentro aborta sem deixar diretório gerenciado órfão.
+        let other = home.appendingPathComponent("other"); try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try "own".write(to: other.appendingPathComponent("settings.json"), atomically: true, encoding: .utf8)
+        let plain = try MigrationService(store: store).importDirectory(other, home: home, name: "Other")
+        try check(!FileManager.default.fileExists(atPath: plain.directory.appendingPathComponent(".claude.json").path) && plain.name == "Other", "non-default folder must not receive the global config")
+        let linked = home.appendingPathComponent("linked"); try FileManager.default.createDirectory(at: linked, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linked.appendingPathComponent("evil"), withDestinationURL: home)
+        var threw = false
+        do { _ = try MigrationService(store: store).importDirectory(linked, home: home) } catch MigrationError.symlinkNotImported { threw = true }
+        try check(threw, "symlinks must be rejected")
+        try check(try store.list().count == 2 && (try store.orphanedProfileDirectories()).isEmpty, "a failed import must not leave an orphaned managed directory")
+    }
+
+    static func testConversationLocator() throws {
+        let root = try temporaryRoot()
+        func profile(_ name: String, slug: String, session: String, cwd: String?) throws -> Profile {
+            let dir = root.appendingPathComponent(name).appendingPathComponent("config")
+            let project = dir.appendingPathComponent("projects/\(slug)"); try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+            var lines = ["{\"type\":\"queue-operation\",\"sessionId\":\"\(session)\"}"]
+            if let cwd { lines.append("{\"type\":\"user\",\"cwd\":\"\(cwd)\",\"sessionId\":\"\(session)\"}") }
+            try lines.joined(separator: "\n").write(to: project.appendingPathComponent("\(session).jsonl"), atomically: true, encoding: .utf8)
+            return Profile(name: name, directory: dir)
+        }
+        let work = try profile("Work", slug: "-Users-me-Develop-api", session: "aaaa1111-0000-0000-0000-000000000000", cwd: "/Users/me/Develop/api")
+        let personal = try profile("Personal", slug: "-Users-me--dotfiles", session: "bbbb2222-0000-0000-0000-000000000000", cwd: nil)
+        let byID = ConversationLocator.find(query: "AAAA1111", profiles: [work, personal])
+        try check(byID.count == 1 && byID[0].profile.id == work.id && byID[0].cwd == "/Users/me/Develop/api", "lookup by session id prefix failed: \(byID)")
+        try check(byID[0].resumeCommand == "cas switch 'Work' && cd '/Users/me/Develop/api' && claude --resume aaaa1111-0000-0000-0000-000000000000", "unexpected resume command: \(byID[0].resumeCommand)")
+        let byCwd = ConversationLocator.find(query: "develop/api", profiles: [work, personal])
+        try check(byCwd.count == 1 && byCwd[0].profile.id == work.id, "lookup by cwd fragment failed")
+        let bySlug = ConversationLocator.find(query: "/Users/me/.dotfiles", profiles: [work, personal])
+        try check(bySlug.count == 1 && bySlug[0].profile.id == personal.id && bySlug[0].cwd == nil, "lookup by folder slug (dots → dashes) failed: \(bySlug)")
+        try check(bySlug[0].resumeCommand == "cas switch 'Personal' && claude --resume bbbb2222-0000-0000-0000-000000000000", "resume command without cwd should skip the cd")
+        try check(ConversationLocator.find(query: "   ", profiles: [work, personal]).isEmpty, "blank query must return nothing")
+        try check(ConversationLocator.find(query: "nope", profiles: [work, personal]).isEmpty, "unrelated query must return nothing")
+    }
+
+    static func testMaintenanceScanAndApply() throws {
+        let root = try temporaryRoot(); let store = try ProfileStore(root: root)
+        let id = UUID(); let dir = try store.createManagedDirectory(id: id); try store.save(Profile(id: id, name: "P", directory: dir))
+        let backups = root.appendingPathComponent("Backups"); try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true)
+        for stamp in 1...8 { try "x".write(to: backups.appendingPathComponent("shell-\(1000 + stamp)-.zshrc"), atomically: true, encoding: .utf8) }
+        for stamp in 1...3 { try "x".write(to: backups.appendingPathComponent("shell-\(2000 + stamp)-.zprofile"), atomically: true, encoding: .utf8) }
+        try "keep".write(to: backups.appendingPathComponent("paseo-config-1.json"), atomically: true, encoding: .utf8)
+        let old = dir.appendingPathComponent(".claude.json.tmp.111.aaa"); try "".write(to: old, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -30 * 24 * 3600)], ofItemAtPath: old.path)
+        let recent = dir.appendingPathComponent(".claude.json.tmp.222.bbb"); try "".write(to: recent, atomically: true, encoding: .utf8)
+        try "real".write(to: dir.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        let orphan = try store.createManagedDirectory(id: UUID())
+        let service = MaintenanceService(store: store, appSupport: root)
+        let report = try service.scan(keepShellBackupsPerFile: 5)
+        try check(report.shellBackups.map(\.lastPathComponent).sorted() == ["shell-1001-.zshrc", "shell-1002-.zshrc", "shell-1003-.zshrc"], "should prune only the oldest .zshrc backups beyond 5 per file: \(report.shellBackups.map(\.lastPathComponent))")
+        try check(report.claudeTempFiles.map { $0.resolvingSymlinksInPath().path } == [old.resolvingSymlinksInPath().path], "only temp files older than 7 days may be listed: \(report.claudeTempFiles)")
+        try check(report.orphanedDirectories.map { $0.resolvingSymlinksInPath().path } == [orphan.deletingLastPathComponent().resolvingSymlinksInPath().path], "orphan directory not listed: \(report.orphanedDirectories)")
+        try check(report.staleKeychainServices.isEmpty, "no keychain client → no keychain work")
+        let removed = service.apply(report)
+        try check(removed == 5, "expected 5 removals, got \(removed)")
+        try check(!FileManager.default.fileExists(atPath: old.path) && FileManager.default.fileExists(atPath: recent.path), "apply removed the wrong temp file")
+        try check(FileManager.default.fileExists(atPath: dir.appendingPathComponent(".claude.json").path), "apply must never touch the real .claude.json")
+        try check(FileManager.default.fileExists(atPath: backups.appendingPathComponent("shell-1008-.zshrc").path) && FileManager.default.fileExists(atPath: backups.appendingPathComponent("paseo-config-1.json").path), "apply removed a backup that should be kept")
+        try check(!FileManager.default.fileExists(atPath: orphan.path), "orphan directory was not removed")
+        try check(try service.scan(keepShellBackupsPerFile: 5).isEmpty, "a second scan right after apply should be clean")
+    }
+
+    static func testDesktopActivatorQuitTimeout() async throws {
+        let client = FakeDesktopAppClient()
+        let activator = DesktopAppActivator(client: client, quitTimeout: 42)
+        _ = await activator.sync(to: Profile(name: "W", directory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cas-quit/\(UUID().uuidString)/config")))
+        try check(client.lastTerminateTimeout == 42, "activator must pass its quit timeout to the client")
+        try check(DesktopAppActivator.defaultQuitTimeout >= 15, "default graceful quit timeout should be generous (was 5 s and fell into forceTerminate)")
+        client.terminateSucceeds = false; client.running = true
+        let result = await activator.sync(to: Profile(name: "W", directory: URL(fileURLWithPath: "/tmp/cas-quit/x/config")))
+        guard case .failed(let message) = result, message.contains("close it manually") else { throw TestFailure.failed("expected a failed sync with manual-close guidance, got \(result)") }
+    }
+
     final class FakeLaunchd: LaunchdEnvironmentClient, @unchecked Sendable {
         var values: [String] = []; var shouldFail = false
         func set(_ value: String) throws { if shouldFail { throw TestFailure.failed("launchd failure") }; values.append(value) }
@@ -1213,11 +1578,12 @@ enum ProfileStoreTests {
         var terminateSucceeds = true
         var launchError: Error?
         var terminateCallCount = 0
+        var lastTerminateTimeout: TimeInterval?
         var launchedWith: (bundleURL: URL, userDataDirectory: URL)?
 
         func locateBundle() -> URL? { bundleURL }
         func isRunning() -> Bool { running }
-        func terminate(timeout: TimeInterval) -> Bool { terminateCallCount += 1; if terminateSucceeds { running = false }; return terminateSucceeds }
+        func terminate(timeout: TimeInterval) -> Bool { terminateCallCount += 1; lastTerminateTimeout = timeout; if terminateSucceeds { running = false }; return terminateSucceeds }
         func launch(bundleURL: URL, userDataDirectory: URL) throws {
             if let launchError { throw launchError }
             launchedWith = (bundleURL, userDataDirectory)

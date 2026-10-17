@@ -10,7 +10,12 @@ public protocol DesktopAppClient: Sendable {
 
 public struct SystemDesktopAppClient: DesktopAppClient {
     public static let bundleIdentifier = "com.anthropic.claudefordesktop"
-    public init() {}
+    /// Se o app não fechar dentro do timeout, só mata à força quando esta política permitir.
+    /// Padrão: nunca — `forceTerminate` no meio de uma escrita em `Cookies` (SQLite) ou
+    /// `Local Storage/leveldb` pode corromper a sessão do app nativo; melhor falhar e pedir
+    /// para fechar manualmente.
+    private let allowsForceTerminate: @Sendable () -> Bool
+    public init(allowsForceTerminate: @escaping @Sendable () -> Bool = { false }) { self.allowsForceTerminate = allowsForceTerminate }
 
     public func locateBundle() -> URL? {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bundleIdentifier)
@@ -25,6 +30,7 @@ public struct SystemDesktopAppClient: DesktopAppClient {
         guard !running.isEmpty else { return true }
         running.forEach { $0.terminate() }
         if waitUntilTerminated(within: timeout) { return true }
+        guard allowsForceTerminate() else { return false }
         NSRunningApplication.runningApplications(withBundleIdentifier: Self.bundleIdentifier).forEach { $0.forceTerminate() }
         return waitUntilTerminated(within: 2)
     }
