@@ -22,7 +22,7 @@ public struct ShellIntegrationManager: Sendable {
     public func install(home: URL, officialBinary: URL, casBinary: URL? = nil) throws {
         let bin = appSupport.appendingPathComponent("bin", isDirectory: true)
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let launcher = renderLauncher(stateURL: appSupport.appendingPathComponent("active-profile.json"), officialBinary: officialBinary)
+        let launcher = renderLauncher(stateURL: appSupport.appendingPathComponent("active-profile.json"), officialBinary: officialBinary, profilesDirectory: appSupport.appendingPathComponent("Profiles", isDirectory: true))
         try launcher.data(using: .utf8)!.write(to: launcherURL(), options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcherURL().path)
         // O `cas` é um binário compilado (vive no bundle do .app), não um script gerado: expomos
@@ -94,16 +94,42 @@ public struct ShellIntegrationManager: Sendable {
         }
     }
 
-    public func renderLauncher(stateURL: URL, officialBinary: URL) -> String {
+    /// O launcher resolve o perfil ativo e, para `--resume <id>`/`-r <id>`, segue o perfil DONO da
+    /// conversa: transcripts nunca mudam de perfil, então retomar uma sessão criada em outro perfil
+    /// falharia com "No conversation found" (e clientes como o Paseo descartam a sessão ao ver esse
+    /// erro). Só redireciona quando o id não existe no perfil ativo e existe em exatamente um outro
+    /// perfil gerenciado; qualquer dúvida mantém o ativo e deixa o CLI decidir.
+    public func renderLauncher(stateURL: URL, officialBinary: URL, profilesDirectory: URL) -> String {
         """
 #!/bin/sh
 set -eu
 STATE=\(Self.singleQuoted(stateURL.path))
 OFFICIAL=\(Self.singleQuoted(officialBinary.path))
+PROFILES=\(Self.singleQuoted(profilesDirectory.path))
 if [ ! -f "$STATE" ]; then echo 'Claude Account Switcher: perfil ativo não encontrado' >&2; exit 78; fi
 CONFIG_DIR=$(/usr/bin/plutil -extract directory raw -o - "$STATE" 2>/dev/null || true)
 case "$CONFIG_DIR" in file://*) CONFIG_DIR="${CONFIG_DIR#file://}";; esac
 if [ -z "$CONFIG_DIR" ] || [ ! -d "$CONFIG_DIR" ]; then echo 'Claude Account Switcher: diretório do perfil indisponível' >&2; exit 78; fi
+# --resume <id>: a conversa fica no perfil em que nasceu.
+RESUME_ID=; prev=
+for arg in "$@"; do
+  case "$prev" in --resume|-r) RESUME_ID=$arg;; esac
+  case "$arg" in --resume=*) RESUME_ID=${arg#--resume=};; esac
+  prev=$arg
+done
+case "$RESUME_ID" in *[!0-9a-fA-F-]*|????????) RESUME_ID=;; esac   # só ids hex-com-hífens com 9+ chars
+if [ ${#RESUME_ID} -lt 9 ]; then RESUME_ID=; fi
+if [ -n "$RESUME_ID" ] && ! ls "$CONFIG_DIR"/projects/*/"$RESUME_ID".jsonl >/dev/null 2>&1; then
+  OWNER=; COUNT=0
+  for f in "$PROFILES"/*/config/projects/*/"$RESUME_ID".jsonl; do
+    [ -f "$f" ] || continue
+    OWNER=${f%/projects/*}; COUNT=$((COUNT + 1))
+  done
+  if [ "$COUNT" -eq 1 ] && [ -d "$OWNER" ]; then
+    echo "Claude Account Switcher: sessão $RESUME_ID pertence a outro perfil; usando $OWNER" >&2
+    CONFIG_DIR=$OWNER
+  fi
+fi
 export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
 exec "$OFFICIAL" "$@"
 """

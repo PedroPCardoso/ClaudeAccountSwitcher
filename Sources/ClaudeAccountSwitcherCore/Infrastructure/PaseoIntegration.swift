@@ -18,6 +18,10 @@ public struct PaseoIntegration: Sendable {
     }
 
     public var activeConfigDirSymlink: URL { appSupport.appendingPathComponent("active-config-dir") }
+    /// Launcher gerenciado (`ShellIntegrationManager.launcherURL()`): além do env, o provider
+    /// `claude` do Paseo passa a invocar o `claude` por ele, para que `--resume` siga o perfil dono
+    /// da conversa em vez do perfil ativo (ver `renderLauncher`).
+    public var launcherURL: URL { appSupport.appendingPathComponent("bin/claude") }
 
     public func isDetected() -> Bool { FileManager.default.fileExists(atPath: configURL.path) }
 
@@ -33,8 +37,9 @@ public struct PaseoIntegration: Sendable {
     }
 
     public func isConfigured() -> Bool {
-        guard let claudeEnv = readClaudeProviderEnv() else { return false }
-        return claudeEnv["CLAUDE_CONFIG_DIR"] as? String == activeConfigDirSymlink.path
+        guard let claude = readClaudeProvider(), let env = claude["env"] as? [String: Any] else { return false }
+        return env["CLAUDE_CONFIG_DIR"] as? String == activeConfigDirSymlink.path
+            && claude["command"] as? [String] == [launcherURL.path]
     }
 
     /// Points Paseo's built-in `claude` provider at the stable symlink, preserving every other
@@ -57,6 +62,7 @@ public struct PaseoIntegration: Sendable {
         var env = claude["env"] as? [String: Any] ?? [:]
         env["CLAUDE_CONFIG_DIR"] = activeConfigDirSymlink.path
         claude["env"] = env
+        claude["command"] = [launcherURL.path]
         providers["claude"] = claude
         agents["providers"] = providers
         root["agents"] = agents
@@ -68,13 +74,12 @@ public struct PaseoIntegration: Sendable {
         return backupURL
     }
 
-    private func readClaudeProviderEnv() -> [String: Any]? {
+    private func readClaudeProvider() -> [String: Any]? {
         guard let raw = try? Data(contentsOf: configURL),
               let root = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
               let agents = root["agents"] as? [String: Any],
               let providers = agents["providers"] as? [String: Any],
-              let claude = providers["claude"] as? [String: Any],
-              let env = claude["env"] as? [String: Any] else { return nil }
-        return env
+              let claude = providers["claude"] as? [String: Any] else { return nil }
+        return claude
     }
 }

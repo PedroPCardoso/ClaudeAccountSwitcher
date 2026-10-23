@@ -99,6 +99,7 @@ The default shortcut is `⌥⌘C`. Applications that were already open may need 
 
 Switching never moves or touches Claude Code data: each conversation stays in the profile it was started in, and processes that are already running keep their directory. The app helps with the edge cases around that:
 
+- **`claude --resume <id>` follows the conversation.** If the session id lives in another profile, the launcher switches to that profile for that process only and says so on stderr. With the Paseo integration the `claude` provider runs through the launcher, so resuming an agent no longer fails with "No conversation found" after you switch accounts.
 - **Where is my conversation?…** searches every profile by session id or project folder and builds the `cas switch … && claude --resume <id>` command for you.
 - **Removing a profile** warns when Claude Code sessions are still running in it and also deletes the matching Keychain credential.
 - **Active state repair**: if `active-profile.json` is ever corrupted, the launcher refuses to run (it never silently falls back to `~/.claude`) and the menu offers to restore the profile recorded in launchd or the most recently used one.

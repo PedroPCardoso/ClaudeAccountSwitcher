@@ -97,6 +97,26 @@ sempre: a conversa está no outro perfil (volte para ele e use `--resume`), não
    `Profiles/` e credenciais órfãs do Keychain. `scan` só lista; `apply` apaga exatamente o
    listado, após confirmação no menu "Manutenção…".
 
+## Bug confirmado em 2026-10-23: `--resume` via Paseo falha após trocar de perfil
+
+Sintoma: "[System Error] No conversation found with session ID: 882affa8…" no Paseo e, em seguida,
+a conversa "perde o histórico". Evidência (`~/.paseo/daemon.log`): 4 falhas (21, 22 e 23/10),
+todas no provider `claude` (o que segue o symlink do perfil ativo); a sessão existia no perfil
+"Agi", mas "Claude work" estava ativo das 15:44 às 17:26; 9 s depois de voltar para "Agi" o
+Paseo relançou e funcionou. Após a falha o Paseo loga "Claude resumed session no longer exists;
+invalidating persisted session" e a próxima mensagem abre conversa nova — daí o histórico sumir.
+
+Causa raiz: transcripts nunca mudam de perfil, mas o Paseo (e o terminal) retomavam sempre com
+o perfil **ativo**. Correção:
+- O launcher `bin/claude` lê `--resume <id>`/`--resume=<id>`/`-r <id>`; se o id não existe no
+  perfil ativo e existe em exatamente um outro perfil gerenciado (`Profiles/*/config/projects/*/`),
+  usa esse perfil e avisa no stderr. Ids inválidos, ausentes, duplicados ou `--continue` mantêm o
+  ativo. Teste `testLauncherResumeFollowsConversationProfile`.
+- `PaseoIntegration.integrate()` passa a gravar `providers.claude.command = [launcher]` além do
+  env; `isConfigured()` exige os dois, então instalações antigas mostram "Integrar com Paseo…"
+  de novo. Teste `testPaseoIntegrateSetsCommandToLauncher`. O daemon do Paseo precisa reiniciar
+  uma vez para passar a usar o `command`.
+
 ## Testes
 
 Quatorze testes novos em `ProfileStoreTests` (100 no total). Primeira leva (sete): lost update na ativação, merge de 100

@@ -149,12 +149,15 @@ Caminho base: raiz do repositório.
   global (fica FORA da pasta sem `CLAUDE_CONFIG_DIR`; dentro do perfil o CLI lê
   `<perfil>/.claude.json`) — `MigrationPlan.globalConfig`.
 - `PaseoIntegration.swift` — mantém symlink estável de config para compatibilidade com o daemon
-  Paseo (ver comentário no arquivo para o motivo detalhado).
+  Paseo (ver comentário no arquivo para o motivo detalhado) e aponta `providers.claude.command`
+  para o launcher gerenciado (para o `--resume` seguir o perfil dono da conversa).
 - `ProcessRunner.swift` — wrapper de `Process` com limite de output e captura de stdout/stderr.
 - `ShellIntegration.swift` — instala/atualiza o launcher transparente `bin/claude` no PATH gerenciado
   do app (marcadores `# >>> Claude Account Switcher >>>` / `# <<< ... <<<`); `install(..., casBinary:)`
   também expõe o CLI `cas` no mesmo bin via symlink idempotente, e `remove()` limpa ambos. Suporta
-  zsh/bash/fish (paths escapados via `singleQuoted`).
+  zsh/bash/fish (paths escapados via `singleQuoted`). O launcher é **resume-aware**: para
+  `--resume <id>`/`-r <id>` cujo id não está no perfil ativo mas está em exatamente um outro perfil
+  gerenciado, usa o perfil dono da conversa (bug Paseo "No conversation found", 2026-10-23).
 
 ### `Sources/ClaudeAccountSwitcherApp/` (executável, UI)
 - `AppMain.swift` — `@main`, `App` SwiftUI, delega para `MenuBarController` via
@@ -189,7 +192,7 @@ Caminho base: raiz do repositório.
   bin gerenciado via `ShellIntegrationManager.install(..., casBinary:)` (feature 1.3.5, issue #35).
 
 ### `Tests/ClaudeAccountSwitcherTests/`
-- `ProfileStoreTests.swift` — único arquivo de teste do projeto (100 testes). Ver seção de
+- `ProfileStoreTests.swift` — único arquivo de teste do projeto (102 testes). Ver seção de
   convenção de teste abaixo.
 
 ### Outros diretórios

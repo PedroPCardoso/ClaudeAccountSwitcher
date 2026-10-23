@@ -111,6 +111,8 @@ enum ProfileStoreTests {
             ,("conversation locator finds a session across profiles by id, slug and cwd", testConversationLocator)
             ,("maintenance scan lists old backups, stale temp files and orphans; apply removes them", testMaintenanceScanAndApply)
             ,("desktop activator waits the configured quit timeout without force quitting", testDesktopActivatorQuitTimeout)
+            ,("launcher --resume follows the profile that owns the conversation", testLauncherResumeFollowsConversationProfile)
+            ,("paseo integrate points the claude provider command at the launcher", testPaseoIntegrateSetsCommandToLauncher)
         ]
         var failures = 0
         for (name, test) in tests {
@@ -1059,6 +1061,65 @@ enum ProfileStoreTests {
         client.terminateSucceeds = false; client.running = true
         let result = await activator.sync(to: Profile(name: "W", directory: URL(fileURLWithPath: "/tmp/cas-quit/x/config")))
         guard case .failed(let message) = result, message.contains("close it manually") else { throw TestFailure.failed("expected a failed sync with manual-close guidance, got \(result)") }
+    }
+
+    static func testLauncherResumeFollowsConversationProfile() throws {
+        let root = try temporaryRoot(); let app = root.appendingPathComponent("app-support"); let store = try ProfileStore(root: app)
+        let idA = UUID(); let dirA = try store.createManagedDirectory(id: idA); let a = Profile(id: idA, name: "A", directory: dirA)
+        let idB = UUID(); let dirB = try store.createManagedDirectory(id: idB); let b = Profile(id: idB, name: "B", directory: dirB)
+        try store.save(a); try store.save(b); try store.setActive(ActiveProfile(id: a.id, directory: dirA))
+        let onlyInB = "882affa8-d8e4-47b2-854e-8c5c57e9bdec", onlyInA = "11111111-2222-3333-4444-555555555555", inBoth = "99999999-aaaa-bbbb-cccc-dddddddddddd"
+        for (dir, ids) in [(dirA, [onlyInA, inBoth]), (dirB, [onlyInB, inBoth])] {
+            let project = dir.appendingPathComponent("projects/-Users-me-proj"); try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+            for id in ids { try "{}".write(to: project.appendingPathComponent("\(id).jsonl"), atomically: true, encoding: .utf8) }
+        }
+        let shell = ShellIntegrationManager(appSupport: app); let home = root.appendingPathComponent("home"); try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        // `/usr/bin/env` rejeitaria `-r`; um binário falso que ignora argumentos e ecoa a variável.
+        let fakeOfficial = root.appendingPathComponent("fake-claude")
+        try "#!/bin/sh\nprintf 'CLAUDE_CONFIG_DIR=%s\\n' \"$CLAUDE_CONFIG_DIR\"\n".write(to: fakeOfficial, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeOfficial.path)
+        try shell.install(home: home, officialBinary: fakeOfficial)
+        func configDir(_ args: [String]) throws -> (dir: String, stderr: String) {
+            let result = try ProcessRunner().run(executable: shell.launcherURL(), arguments: args)
+            guard let line = result.stdout.split(separator: "\n").first(where: { $0.hasPrefix("CLAUDE_CONFIG_DIR=") }) else { throw TestFailure.failed("no CLAUDE_CONFIG_DIR for \(args)") }
+            return (String(line.dropFirst("CLAUDE_CONFIG_DIR=".count)), result.stderr)
+        }
+        // A conversa nasceu em B; com A ativo, `--resume` deve usar B (todas as grafias do flag).
+        for args in [["--resume=\(onlyInB)"], ["--resume", onlyInB], ["-r", onlyInB], ["--model", "opus", "--resume=\(onlyInB)", "--verbose"]] {
+            let r = try configDir(args)
+            try check(r.dir == dirB.path, "\(args) should resolve to the owning profile B, got \(r.dir)")
+            try check(r.stderr.contains(onlyInB), "launcher should tell on stderr that it redirected the resume: \(r.stderr)")
+        }
+        // Sessão do próprio perfil ativo, ou presente nos dois: fica no ativo, sem aviso.
+        for id in [onlyInA, inBoth] {
+            let r = try configDir(["--resume", id]); try check(r.dir == dirA.path && r.stderr.isEmpty, "\(id) should stay on the active profile")
+        }
+        // Id desconhecido, `--resume` sem id, `--continue`, ou argumentos suspeitos: perfil ativo, sem redirecionar.
+        for args in [["--resume", "deadbeef-0000-0000-0000-000000000000"], ["--resume"], ["--continue"], ["--resume", "--verbose"], ["-r", "../../etc"], ["chat", "-r"]] {
+            let r = try configDir(args); try check(r.dir == dirA.path, "\(args) should stay on the active profile, got \(r.dir)")
+        }
+        try check(try configDir([]).dir == dirA.path, "plain launch should use the active profile")
+    }
+
+    static func testPaseoIntegrateSetsCommandToLauncher() throws {
+        let root = try temporaryRoot()
+        let paseoHome = root.appendingPathComponent(".paseo"); try FileManager.default.createDirectory(at: paseoHome, withIntermediateDirectories: true)
+        let app = root.appendingPathComponent("app-support")
+        // Config já integrado pela versão anterior (só env): deve pedir reconfiguração.
+        let legacy = """
+        {"agents":{"providers":{"claude":{"env":{"CLAUDE_CONFIG_DIR":"\(app.appendingPathComponent("active-config-dir").path)"}},"claude-agi":{"extends":"claude","command":["/x/claude-agi"]}}}}
+        """
+        try legacy.data(using: .utf8)!.write(to: paseoHome.appendingPathComponent("config.json"))
+        let paseo = PaseoIntegration(appSupport: app, paseoHome: paseoHome)
+        try check(!paseo.isConfigured(), "env-only integration must count as not configured so the UI offers to reconfigure")
+        try paseo.integrate()
+        try check(paseo.isConfigured(), "should be configured after integrate()")
+        let raw = try Data(contentsOf: paseoHome.appendingPathComponent("config.json"))
+        let providers = (((try JSONSerialization.jsonObject(with: raw) as! [String: Any])["agents"] as! [String: Any])["providers"] as! [String: Any])
+        let claude = providers["claude"] as! [String: Any]
+        try check(claude["command"] as? [String] == [ShellIntegrationManager(appSupport: app).launcherURL().path], "claude provider command must be the managed launcher: \(String(describing: claude["command"]))")
+        try check((claude["env"] as? [String: Any])?["CLAUDE_CONFIG_DIR"] as? String == paseo.activeConfigDirSymlink.path, "env symlink must be kept")
+        try check((providers["claude-agi"] as? [String: Any])?["command"] as? [String] == ["/x/claude-agi"], "other providers' commands must not be touched")
     }
 
     final class FakeLaunchd: LaunchdEnvironmentClient, @unchecked Sendable {
