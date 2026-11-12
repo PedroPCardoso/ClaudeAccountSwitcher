@@ -99,6 +99,11 @@ public struct ShellIntegrationManager: Sendable {
     /// falharia com "No conversation found" (e clientes como o Paseo descartam a sessão ao ver esse
     /// erro). Só redireciona quando o id não existe no perfil ativo e existe em exatamente um outro
     /// perfil gerenciado; qualquer dúvida mantém o ativo e deixa o CLI decidir.
+    ///
+    /// Um `CLAUDE_CONFIG_DIR` herdado FORA da raiz gerenciada (pasta própria de outro app, sandbox, fixture de teste) é
+    /// respeitado: apps como o Operaí chamam `claude` pelo PATH com a pasta deles, e sobrescrevê-la punha as sessões e as
+    /// limpezas desse app dentro do perfil pessoal. Valores dentro da raiz (o perfil exportado pelo cas-env.sh, mesmo
+    /// desatualizado após uma troca, e o symlink `active-config-dir`) seguem o perfil ativo.
     public func renderLauncher(stateURL: URL, officialBinary: URL, profilesDirectory: URL) -> String {
         """
 #!/bin/sh
@@ -106,6 +111,12 @@ set -eu
 STATE=\(Self.singleQuoted(stateURL.path))
 OFFICIAL=\(Self.singleQuoted(officialBinary.path))
 PROFILES=\(Self.singleQuoted(profilesDirectory.path))
+MANAGED_ROOT=\(Self.singleQuoted(profilesDirectory.deletingLastPathComponent().path))
+# Pasta escolhida por quem chamou, fora da raiz gerenciada: não é um perfil, então não é nossa para trocar.
+case "${CLAUDE_CONFIG_DIR:-}" in
+  ''|"$MANAGED_ROOT"|"$MANAGED_ROOT"/*) ;;
+  *) exec "$OFFICIAL" "$@" ;;
+esac
 if [ ! -f "$STATE" ]; then echo 'Claude Account Switcher: perfil ativo não encontrado' >&2; exit 78; fi
 CONFIG_DIR=$(/usr/bin/plutil -extract directory raw -o - "$STATE" 2>/dev/null || true)
 case "$CONFIG_DIR" in file://*) CONFIG_DIR="${CONFIG_DIR#file://}";; esac

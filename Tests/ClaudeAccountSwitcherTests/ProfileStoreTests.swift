@@ -10,6 +10,9 @@ enum TestFailure: Error, CustomStringConvertible {
 @main
 enum ProfileStoreTests {
     static func main() async {
+        // Hermético: o shell de quem roda os testes exporta CLAUDE_CONFIG_DIR do perfil real (cas-env.sh), e o
+        // launcher respeita um CLAUDE_CONFIG_DIR externo. Os testes que precisam dele o passam explicitamente.
+        unsetenv("CLAUDE_CONFIG_DIR")
         let tests: [(String, () async throws -> Void)] = [
             ("profile JSON round trip", testProfileRoundTrip),
             ("profile derives a sibling desktop directory from its config directory", testDesktopDirectory),
@@ -112,6 +115,7 @@ enum ProfileStoreTests {
             ,("maintenance scan lists old backups, stale temp files and orphans; apply removes them", testMaintenanceScanAndApply)
             ,("desktop activator waits the configured quit timeout without force quitting", testDesktopActivatorQuitTimeout)
             ,("launcher --resume follows the profile that owns the conversation", testLauncherResumeFollowsConversationProfile)
+            ,("launcher keeps a CLAUDE_CONFIG_DIR chosen outside the managed root", testLauncherKeepsForeignConfigDir)
             ,("paseo integrate points the claude provider command at the launcher", testPaseoIntegrateSetsCommandToLauncher)
         ]
         var failures = 0
@@ -1099,6 +1103,38 @@ enum ProfileStoreTests {
             let r = try configDir(args); try check(r.dir == dirA.path, "\(args) should stay on the active profile, got \(r.dir)")
         }
         try check(try configDir([]).dir == dirA.path, "plain launch should use the active profile")
+    }
+
+    /// Um app com pasta Claude própria (ex.: bots do Operaí) chama `claude` pelo PATH e cai no launcher: sobrescrever o
+    /// CLAUDE_CONFIG_DIR dele punha as sessões e limpezas desse app dentro do perfil pessoal. Só valores do próprio app
+    /// (perfil exportado pelo cas-env.sh, mesmo desatualizado, e o symlink active-config-dir) seguem o perfil ativo.
+    static func testLauncherKeepsForeignConfigDir() throws {
+        let root = try temporaryRoot(); let app = root.appendingPathComponent("app-support"); let store = try ProfileStore(root: app)
+        let idA = UUID(); let dirA = try store.createManagedDirectory(id: idA); let a = Profile(id: idA, name: "A", directory: dirA)
+        let idB = UUID(); let dirB = try store.createManagedDirectory(id: idB); let b = Profile(id: idB, name: "B", directory: dirB)
+        try store.save(a); try store.save(b); try store.setActive(ActiveProfile(id: a.id, directory: dirA))
+        let shell = ShellIntegrationManager(appSupport: app); let home = root.appendingPathComponent("home"); try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let fakeOfficial = root.appendingPathComponent("fake-claude")
+        try "#!/bin/sh\nprintf 'CLAUDE_CONFIG_DIR=%s\\n' \"$CLAUDE_CONFIG_DIR\"\n".write(to: fakeOfficial, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeOfficial.path)
+        try shell.install(home: home, officialBinary: fakeOfficial)
+        func launched(with inherited: String, _ args: [String] = []) throws -> String {
+            let result = try ProcessRunner().run(executable: shell.launcherURL(), arguments: args, environment: ["CLAUDE_CONFIG_DIR": inherited])
+            guard let line = result.stdout.split(separator: "\n").first(where: { $0.hasPrefix("CLAUDE_CONFIG_DIR=") }) else { throw TestFailure.failed("no CLAUDE_CONFIG_DIR for \(inherited): \(result.stderr)") }
+            return String(line.dropFirst("CLAUDE_CONFIG_DIR=".count))
+        }
+        // Pasta própria de outro app: respeitada, inclusive num --resume (a conversa é dele, não de um perfil).
+        let foreign = root.appendingPathComponent("operai-teste/claude").path
+        try check(try launched(with: foreign) == foreign, "a config dir outside the managed root must be kept")
+        try check(try launched(with: foreign, ["--resume", "882affa8-d8e4-47b2-854e-8c5c57e9bdec"]) == foreign, "resume must keep a foreign config dir")
+        // Valores do próprio app seguem o perfil ativo: perfil B exportado antes de uma troca, symlink do Paseo, vazio.
+        for inherited in [dirB.path, app.appendingPathComponent("active-config-dir").path, ""] {
+            let got = try launched(with: inherited)
+            try check(got == dirA.path, "\(inherited.isEmpty ? "unset" : inherited) should resolve to the active profile, got \(got)")
+        }
+        // Um prefixo parecido com a raiz gerenciada não conta como dentro dela.
+        let lookalike = app.path + "-copia/config"
+        try check(try launched(with: lookalike) == lookalike, "a sibling folder that only shares the prefix is foreign")
     }
 
     static func testPaseoIntegrateSetsCommandToLauncher() throws {
