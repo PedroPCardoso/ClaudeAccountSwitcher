@@ -498,10 +498,18 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         do {
             let plan = try migration.preview(home: home)
             guard !plan.sources.isEmpty else { notify(AppStrings.t("Nenhum perfil existente encontrado", "No existing profiles found")); return }
-            let alert = NSAlert(); alert.messageText = "Migrar perfis existentes?"; alert.informativeText = plan.sources.map(\.path).joined(separator: "\n") + "\n\nOs originais serão mantidos."; alert.addButton(withTitle: "Migrar"); alert.addButton(withTitle: "Cancelar")
+            // A sessão do app nativo (pasta padrão) corresponde à conta de ~/.claude; só ela recebe a cópia.
+            let desktopTarget = plan.desktopSource == nil ? nil : plan.sources.first(where: { $0.lastPathComponent == ".claude" })
+            let alert = NSAlert(); alert.messageText = AppStrings.t("Migrar perfis existentes?", "Migrate existing profiles?")
+            var lines = plan.sources.map(\.path)
+            if desktopTarget != nil { lines.append(AppStrings.t("+ sessão do app nativo do Claude (copiada para o perfil de ~/.claude; feche o app antes)", "+ native Claude app session (copied into the ~/.claude profile; quit the app first)")) }
+            alert.informativeText = lines.joined(separator: "\n") + "\n\n" + AppStrings.t("Os originais serão mantidos.", "The originals are kept.")
+            alert.addButton(withTitle: AppStrings.t("Migrar", "Migrate")); alert.addButton(withTitle: AppStrings.t("Cancelar", "Cancel"))
             guard alert.runModal() == .alertFirstButtonReturn else { return }
-            let report = try migration.execute(plan)
+            let report = try migration.execute(plan, desktopTarget: desktopTarget, isDesktopRunning: { desktopClient.isRunning() })
             rebuildMenu(); notify(AppStrings.t("\(report.imported.count) perfil(is) migrado(s)", "\(report.imported.count) profile(s) migrated"))
+        } catch MigrationError.desktopAppRunning {
+            showError(NSError(domain: "Claude Account Switcher", code: 8, userInfo: [NSLocalizedDescriptionKey: AppStrings.t("Feche o app nativo do Claude e tente de novo: a sessão dele só pode ser copiada com o app fechado.", "Quit the native Claude app and try again: its session can only be copied while the app is closed.")]))
         } catch { showError(error) }
     }
 

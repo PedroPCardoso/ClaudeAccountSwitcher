@@ -1347,11 +1347,19 @@ enum ProfileStoreTests {
         let store = try ProfileStore(root: home.appendingPathComponent("managed"))
         let service = MigrationService(store: store)
         let plan = try service.preview(home: home)
+        // Com o app nativo aberto a cópia é recusada antes de importar qualquer coisa (LevelDB em escrita).
+        var refused = false
+        do { _ = try service.execute(plan, desktopTarget: source, isDesktopRunning: { true }) } catch MigrationError.desktopAppRunning { refused = true }
+        try check(refused, "execute must refuse to copy the desktop session while the app runs")
+        try check(try store.list().isEmpty, "a refused migration must not import profiles halfway")
+
         let report = try service.execute(plan, desktopTarget: source)
 
         let importedDesktopDir = report.imported[0].deletingLastPathComponent().appendingPathComponent("desktop")
         try check(FileManager.default.fileExists(atPath: importedDesktopDir.appendingPathComponent("Cookies").path), "desktop session was not copied into the target profile's desktop directory")
         try check(FileManager.default.fileExists(atPath: desktopDir.appendingPathComponent("Cookies").path), "original desktop app data was modified or removed")
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: report.imported[0].deletingLastPathComponent().path)
+        try check(!siblings.contains(where: { $0.hasPrefix(".desktop.tmp-") }), "staging directory was left behind: \(siblings)")
     }
 
     static func testMigrationNoDesktopSessionWhenAbsent() throws {

@@ -103,8 +103,10 @@ public struct MigrationService: Sendable {
         return profile
     }
 
-    public func execute(_ plan: MigrationPlan, desktopTarget: URL? = nil) throws -> MigrationReport {
+    public func execute(_ plan: MigrationPlan, desktopTarget: URL? = nil, isDesktopRunning: () -> Bool = { false }) throws -> MigrationReport {
         let fm = FileManager.default; var imported: [URL] = []
+        // Decide antes de tocar no disco: copiar LevelDB/SQLite do app aberto gera sessão inconsistente.
+        if desktopTarget != nil, plan.desktopSource != nil, isDesktopRunning() { throw MigrationError.desktopAppRunning }
         for source in plan.sources {
             let id = UUID(); let destination = try store.createManagedDirectory(id: id)
             let entries = try fm.contentsOfDirectory(at: source, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [])
@@ -121,13 +123,13 @@ public struct MigrationService: Sendable {
             try store.save(Profile(id: id, name: source.lastPathComponent == ".claude" ? "Claude pessoal" : "Claude work", kind: .custom, directory: destination, health: .unknown))
             imported.append(destination)
             if let desktopSource = plan.desktopSource, source.path == desktopTarget?.path {
+                // Mesmo staging atômico de `copyDefaultDesktopSessionIfAvailable`: uma cópia interrompida
+                // nunca passa por sessão válida em `hasRealDesktopSession`.
                 let desktopDestination = destination.deletingLastPathComponent().appendingPathComponent("desktop", isDirectory: true)
-                try fm.createDirectory(at: desktopDestination, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-                let desktopEntries = try fm.contentsOfDirectory(at: desktopSource, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [])
-                for entry in desktopEntries {
-                    if (try entry.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true { throw NSError(domain: "ClaudeAccountSwitcher", code: 1001, userInfo: [NSLocalizedDescriptionKey: "symbolic links are not imported"]) }
-                    try fm.copyItem(at: entry, to: desktopDestination.appendingPathComponent(entry.lastPathComponent))
-                }
+                let staging = destination.deletingLastPathComponent().appendingPathComponent(".desktop.tmp-\(UUID().uuidString)", isDirectory: true)
+                do { try MigrationService.copyDesktopSessionContents(from: desktopSource, to: staging) }
+                catch { try? fm.removeItem(at: staging); throw error }
+                try fm.moveItem(at: staging, to: desktopDestination)
             }
         }
         return MigrationReport(imported: imported, aliases: plan.aliases)
