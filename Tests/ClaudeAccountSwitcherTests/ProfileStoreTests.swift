@@ -117,6 +117,7 @@ enum ProfileStoreTests {
             ,("launcher --resume follows the profile that owns the conversation", testLauncherResumeFollowsConversationProfile)
             ,("launcher keeps a CLAUDE_CONFIG_DIR chosen outside the managed root", testLauncherKeepsForeignConfigDir)
             ,("launcher keeps the inherited CLAUDE_CONFIG_DIR of a session it launched itself", testLauncherKeepsInheritedDirOfLaunchedSession)
+            ,("paseo revert removes only the launcher command and symlink env, with backup", testPaseoRevertRemovesOnlyOurFields)
             ,("paseo integrate points the claude provider command at the launcher", testPaseoIntegrateSetsCommandToLauncher)
         ]
         var failures = 0
@@ -1184,6 +1185,33 @@ enum ProfileStoreTests {
         // Marca apontando para diretório que já não existe (perfil removido) não pode travar: segue o ativo.
         let gone = app.appendingPathComponent("Profiles/00000000-0000-0000-0000-000000000000/config").path
         try check(try launched(env: ["CLAUDE_CONFIG_DIR": gone, "CAS_LAUNCHED_DIR": gone]).config == dirB.path, "a missing inherited dir must fall back to the active profile")
+    }
+
+    static func testPaseoRevertRemovesOnlyOurFields() throws {
+        let root = try temporaryRoot()
+        let paseoHome = root.appendingPathComponent(".paseo"); try FileManager.default.createDirectory(at: paseoHome, withIntermediateDirectories: true)
+        let app = root.appendingPathComponent("app-support")
+        let paseo = PaseoIntegration(appSupport: app, paseoHome: paseoHome)
+        let original = """
+        {"agents":{"providers":{"claude":{"env":{"CLAUDE_CONFIG_DIR":"/custom/dir","FOO":"bar"}},"claude-agi":{"extends":"claude","command":["/x/claude-agi"]}}},"other":1}
+        """
+        try original.data(using: .utf8)!.write(to: paseoHome.appendingPathComponent("config.json"))
+        // Nada nosso no arquivo: revert não escreve nem faz backup.
+        try check(try paseo.revert() == nil, "revert on a config we never touched must be a no-op")
+        try check(try String(contentsOf: paseoHome.appendingPathComponent("config.json"), encoding: .utf8) == original, "no-op revert must not rewrite the file")
+        try paseo.integrate()
+        try check(paseo.isConfigured(), "precondition: integrated")
+        let backup = try paseo.revert()
+        try check(backup != nil && FileManager.default.fileExists(atPath: backup!.path), "revert must back up before writing")
+        let raw = try Data(contentsOf: paseoHome.appendingPathComponent("config.json"))
+        let rootObject = try JSONSerialization.jsonObject(with: raw) as! [String: Any]
+        let providers = ((rootObject["agents"] as! [String: Any])["providers"] as! [String: Any])
+        let claude = providers["claude"] as! [String: Any]
+        try check(claude["command"] == nil, "launcher command must be removed: \(String(describing: claude["command"]))")
+        let env = claude["env"] as? [String: Any]
+        try check(env?["CLAUDE_CONFIG_DIR"] == nil && env?["FOO"] as? String == "bar", "only our env key may be removed: \(String(describing: env))")
+        try check((providers["claude-agi"] as? [String: Any])?["command"] as? [String] == ["/x/claude-agi"] && rootObject["other"] as? Int == 1, "unrelated providers and keys must be preserved")
+        try check(!paseo.isConfigured(), "after revert the integration must read as not configured")
     }
 
     static func testPaseoIntegrateSetsCommandToLauncher() throws {

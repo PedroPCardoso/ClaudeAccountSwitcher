@@ -123,7 +123,7 @@ struct PreferencesView: View {
                     Spacer()
                 }
                 HStack {
-                    Text("Os perfis e credenciais serão preservados ao desinstalar.")
+                    Text(AppStrings.t("Ao desinstalar, perfis e credenciais são preservados; terminal, launchd e Paseo voltam para ~/.claude.", "Uninstalling keeps profiles and credentials; terminal, launchd and Paseo go back to ~/.claude."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()

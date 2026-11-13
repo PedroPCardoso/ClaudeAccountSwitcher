@@ -74,6 +74,39 @@ public struct PaseoIntegration: Sendable {
         return backupURL
     }
 
+    /// Desfaz exatamente o que `integrate()` gravou: tira `command` quando é o nosso launcher e o env
+    /// `CLAUDE_CONFIG_DIR` quando é o nosso symlink. Qualquer outro campo (inclusive um env próprio do
+    /// usuário) fica intacto. Devolve o backup gravado, ou `nil` quando não havia nada nosso (não escreve).
+    /// Usado na desinstalação: sem isto o provider ficaria apontando para um launcher que não existe mais.
+    @discardableResult
+    public func revert() throws -> URL? {
+        guard let raw = try? Data(contentsOf: configURL) else { throw PaseoIntegrationError.configNotFound }
+        guard var root = try JSONSerialization.jsonObject(with: raw) as? [String: Any] else { throw PaseoIntegrationError.invalidConfig }
+        guard var agents = root["agents"] as? [String: Any],
+              var providers = agents["providers"] as? [String: Any],
+              var claude = providers["claude"] as? [String: Any] else { return nil }
+        var changed = false
+        if claude["command"] as? [String] == [launcherURL.path] { claude["command"] = nil; changed = true }
+        if var env = claude["env"] as? [String: Any], env["CLAUDE_CONFIG_DIR"] as? String == activeConfigDirSymlink.path {
+            env["CLAUDE_CONFIG_DIR"] = nil
+            claude["env"] = env.isEmpty ? nil : env
+            changed = true
+        }
+        guard changed else { return nil }
+
+        let backups = appSupport.appendingPathComponent("Backups", isDirectory: true)
+        try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let backupURL = backups.appendingPathComponent("paseo-config-\(Int(Date().timeIntervalSince1970)).json")
+        try raw.write(to: backupURL, options: .atomic)
+
+        providers["claude"] = claude
+        agents["providers"] = providers
+        root["agents"] = agents
+        let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted])
+        try data.write(to: configURL, options: .atomic)
+        return backupURL
+    }
+
     private func readClaudeProvider() -> [String: Any]? {
         guard let raw = try? Data(contentsOf: configURL),
               let root = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],

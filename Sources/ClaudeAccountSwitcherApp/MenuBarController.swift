@@ -855,10 +855,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     private func uninstall() {
         let alert = NSAlert()
-        alert.messageText = "Desinstalar Claude Account Switcher?"
-        alert.informativeText = "O aplicativo, o launcher e a integração do terminal serão removidos. Seus perfis, credenciais e dados em Library/Application Support serão preservados."
-        alert.addButton(withTitle: "Desinstalar")
-        alert.addButton(withTitle: "Cancelar")
+        alert.messageText = AppStrings.t("Desinstalar Claude Account Switcher?", "Uninstall Claude Account Switcher?")
+        alert.informativeText = AppStrings.t(
+            "O aplicativo, o launcher, a integração do terminal, a variável CLAUDE_CONFIG_DIR do launchd e a integração com o Paseo serão removidos. Novos processos claude voltam a usar ~/.claude. Seus perfis, credenciais e dados em Library/Application Support serão preservados.",
+            "The app, the launcher, the terminal integration, the launchd CLAUDE_CONFIG_DIR variable and the Paseo integration will be removed. New claude processes go back to ~/.claude. Your profiles, credentials and data in Library/Application Support are preserved.")
+        alert.addButton(withTitle: AppStrings.t("Desinstalar", "Uninstall"))
+        alert.addButton(withTitle: AppStrings.t("Cancelar", "Cancel"))
         alert.alertStyle = .warning
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
@@ -867,6 +869,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             try shell.remove(home: home)
             try? loginItem.setEnabled(false)
             try? FileManager.default.removeItem(at: shell.launcherURL())
+            // Sem o launcher e o bloco do shell, novos terminais voltam para ~/.claude. O launchd e o
+            // Paseo precisam voltar junto, senão apps GUI e o Paseo ficariam num perfil e o terminal em outro.
+            try? SystemLaunchdEnvironment().unset()
+            if paseo.isDetected() { try? paseo.revert() }
             let bundle = Bundle.main.bundleURL
             if bundle.path.hasPrefix("/Applications/") || bundle.path.hasPrefix(home.appendingPathComponent("Applications").path + "/") {
                 try? FileManager.default.removeItem(at: bundle)
