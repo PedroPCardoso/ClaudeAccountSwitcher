@@ -1037,12 +1037,14 @@ enum ProfileStoreTests {
         let personal = try profile("Personal", slug: "-Users-me--dotfiles", session: "bbbb2222-0000-0000-0000-000000000000", cwd: nil)
         let byID = ConversationLocator.find(query: "AAAA1111", profiles: [work, personal])
         try check(byID.count == 1 && byID[0].profile.id == work.id && byID[0].cwd == "/Users/me/Develop/api", "lookup by session id prefix failed: \(byID)")
-        try check(byID[0].resumeCommand == "cas switch 'Work' && cd '/Users/me/Develop/api' && claude --resume aaaa1111-0000-0000-0000-000000000000", "unexpected resume command: \(byID[0].resumeCommand)")
+        // Sem `cas switch`: o launcher resume-aware já abre a conversa no perfil dono, e trocar o perfil
+        // global da máquina só para retomar uma conversa era efeito colateral indesejado.
+        try check(byID[0].resumeCommand == "cd '/Users/me/Develop/api' && claude --resume aaaa1111-0000-0000-0000-000000000000", "unexpected resume command: \(byID[0].resumeCommand)")
         let byCwd = ConversationLocator.find(query: "develop/api", profiles: [work, personal])
         try check(byCwd.count == 1 && byCwd[0].profile.id == work.id, "lookup by cwd fragment failed")
         let bySlug = ConversationLocator.find(query: "/Users/me/.dotfiles", profiles: [work, personal])
         try check(bySlug.count == 1 && bySlug[0].profile.id == personal.id && bySlug[0].cwd == nil, "lookup by folder slug (dots → dashes) failed: \(bySlug)")
-        try check(bySlug[0].resumeCommand == "cas switch 'Personal' && claude --resume bbbb2222-0000-0000-0000-000000000000", "resume command without cwd should skip the cd")
+        try check(bySlug[0].resumeCommand == "claude --resume bbbb2222-0000-0000-0000-000000000000", "resume command without cwd should be just the resume")
         try check(ConversationLocator.find(query: "   ", profiles: [work, personal]).isEmpty, "blank query must return nothing")
         try check(ConversationLocator.find(query: "nope", profiles: [work, personal]).isEmpty, "unrelated query must return nothing")
     }

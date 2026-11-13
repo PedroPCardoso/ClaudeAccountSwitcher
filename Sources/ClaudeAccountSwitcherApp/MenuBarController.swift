@@ -316,7 +316,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let field = NSTextField(string: ""); field.placeholderString = AppStrings.t("id da sessão ou trecho da pasta (ex.: Develop/api)", "session id or folder fragment (e.g. Develop/api)")
         field.frame = NSRect(x: 0, y: 0, width: 360, height: 24)
         let ask = NSAlert(); ask.messageText = AppStrings.t("Onde está minha conversa?", "Where is my conversation?")
-        ask.informativeText = AppStrings.t("Trocar de perfil não move conversas: cada uma fica no perfil em que foi iniciada. Informe o id da sessão ou um trecho do diretório do projeto.", "Switching profiles does not move conversations: each one stays in the profile it was started in. Enter the session id or a fragment of the project directory.")
+        ask.informativeText = AppStrings.t("Trocar de perfil não move conversas: cada uma fica no perfil em que foi iniciada. O comando gerado retoma a conversa no perfil dono sem trocar o perfil ativo. Informe o id da sessão ou um trecho do diretório do projeto.", "Switching profiles does not move conversations: each one stays in the profile it was started in. The generated command resumes it in the owning profile without changing the active profile. Enter the session id or a fragment of the project directory.")
         ask.accessoryView = field; ask.addButton(withTitle: AppStrings.t("Procurar", "Search")); ask.addButton(withTitle: AppStrings.t("Cancelar", "Cancel"))
         NSApp.activate(ignoringOtherApps: true)
         guard ask.runModal() == .alertFirstButtonReturn else { return }

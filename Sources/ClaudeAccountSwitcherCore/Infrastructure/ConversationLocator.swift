@@ -8,9 +8,11 @@ public struct ConversationMatch: Equatable, Sendable {
     public let modifiedAt: Date
     public let file: URL
 
-    /// Comando pronto para retomar: troca para o perfil, entra na pasta e faz `--resume`.
+    /// Comando pronto para retomar: entra na pasta e faz `--resume`. Não troca o perfil ativo: o launcher
+    /// gerenciado (`ShellIntegrationManager.renderLauncher`) detecta que o id pertence a outro perfil e
+    /// abre a conversa lá, sem mexer na conta do resto da máquina.
     public var resumeCommand: String {
-        var parts = ["cas switch \(Self.quoted(profile.name))"]
+        var parts: [String] = []
         if let cwd { parts.append("cd \(Self.quoted(cwd))") }
         parts.append("claude --resume \(sessionID)")
         return parts.joined(separator: " && ")
