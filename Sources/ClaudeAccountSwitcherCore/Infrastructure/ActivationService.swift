@@ -59,7 +59,11 @@ public actor ActivationService {
     /// cada reversão é independente e não deve mascarar o erro original da ativação.
     private func rollback(previousActive: ActiveProfile?, previousRecord: Profile?, previousSymlinkTarget: URL?,
                           didSetActive: Bool, didSetLaunchd: Bool, didUpdateSymlink: Bool, didSave: Bool) {
-        if didSave, let previousRecord { try? store.save(previousRecord) }
+        // Só os campos que a ativação gravou: `save` do snapshot inteiro reverteria rename/uso feitos por
+        // outro escritor nesse meio-tempo (mesma regra do caminho feliz).
+        if didSave, let previousRecord {
+            try? store.update(id: previousRecord.id) { $0.lastUsedAt = previousRecord.lastUsedAt; $0.health = previousRecord.health }
+        }
         if didUpdateSymlink, let previousSymlinkTarget { try? paseoIntegration?.updateSymlink(to: previousSymlinkTarget) }
         if didSetLaunchd {
             if let previousActive { try? launchd.set(previousActive.directory.path) } else { try? launchd.unset() }
