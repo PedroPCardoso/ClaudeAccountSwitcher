@@ -956,7 +956,15 @@ enum ProfileStoreTests {
         """
         let services = KeychainCredentials.parseServices(dump: dump)
         try check(services == [a, "Claude Code-credentials-deadbeef"].sorted(), "parse should keep only suffixed Claude Code services, deduplicated: \(services)")
-        try check(KeychainCredentials.stale(services: services, knownDirectories: [dirA, dirB]) == ["Claude Code-credentials-deadbeef"], "stale must exclude services of known directories")
+        // Só credenciais de diretórios órfãos do PRÓPRIO app podem ser apagadas. Uma credencial de
+        // pasta externa (~/.claude-work, pasta de outro app) não é "de perfil que já não existe":
+        // apagá-la destruiria um login que o usuário ainda usa fora do switcher.
+        let orphanContainer = URL(fileURLWithPath: "/tmp/cas/Profiles/DEADBEEF-0000-0000-0000-000000000000")
+        let orphanService = KeychainCredentials.serviceName(for: orphanContainer.appendingPathComponent("config"))
+        let external = KeychainCredentials.serviceName(for: URL(fileURLWithPath: "/Users/x/.claude-work"))
+        let candidates = [a, orphanService, external, "Claude Code-credentials-deadbeef"]
+        try check(KeychainCredentials.stale(services: candidates, orphanedProfileDirectories: [orphanContainer]) == [orphanService], "stale must list only services of orphaned managed directories")
+        try check(KeychainCredentials.stale(services: candidates, orphanedProfileDirectories: []).isEmpty, "no orphans → nothing to delete, even with unknown services present")
     }
 
     static func testDesktopCopyRefusesWhileRunningAndStages() throws {

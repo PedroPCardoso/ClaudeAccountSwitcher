@@ -104,7 +104,7 @@ Switching never moves or touches Claude Code data: each conversation stays in th
 - **Removing a profile** warns when Claude Code sessions are still running in it and also deletes the matching Keychain credential.
 - **Active state repair**: if `active-profile.json` is ever corrupted, the launcher refuses to run (it never silently falls back to `~/.claude`) and the menu offers to restore the profile recorded in launchd or the most recently used one.
 - **Native app relaunch** waits up to 20 s for a graceful quit and does not force-kill the app unless you enable that in Preferences; copying the native app session into a profile is refused while the app is open.
-- **Maintenance…** prunes old dotfile backups, stale `.claude.json.tmp.*` files, orphaned profile directories and Keychain credentials of removed profiles, after showing what it will delete.
+- **Maintenance…** prunes old dotfile backups, stale `.claude.json.tmp.*` files, orphaned profile directories and Keychain credentials of orphaned managed profile directories (credentials of external config folders such as ~/.claude-work are never touched), after showing what it will delete.
 
 ## Command line (`cas`)
 

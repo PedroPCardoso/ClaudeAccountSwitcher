@@ -353,7 +353,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             AppStrings.t("• \(report.shellBackups.count) backup(s) antigo(s) de dotfiles (mantém os 5 mais recentes de cada)", "• \(report.shellBackups.count) old dotfile backup(s) (keeps the 5 most recent of each)"),
             AppStrings.t("• \(report.claudeTempFiles.count) temporário(s) .claude.json.tmp.* com mais de 7 dias", "• \(report.claudeTempFiles.count) .claude.json.tmp.* temp file(s) older than 7 days"),
             AppStrings.t("• \(report.orphanedDirectories.count) diretório(s) de perfil órfão(s) em Profiles/", "• \(report.orphanedDirectories.count) orphaned profile director(ies) in Profiles/"),
-            AppStrings.t("• \(report.staleKeychainServices.count) credencial(is) no Keychain de perfis que já não existem", "• \(report.staleKeychainServices.count) Keychain credential(s) of profiles that no longer exist"),
+            AppStrings.t("• \(report.staleKeychainServices.count) credencial(is) no Keychain de diretórios órfãos de Profiles/ (credenciais de pastas externas ao app nunca são tocadas)", "• \(report.staleKeychainServices.count) Keychain credential(s) of orphaned Profiles/ directories (credentials of folders outside the app are never touched)"),
             "",
             AppStrings.t("Perfis, sessões e o .claude.json real não são tocados.", "Profiles, sessions and the real .claude.json are not touched.")
         ].joined(separator: "\n")

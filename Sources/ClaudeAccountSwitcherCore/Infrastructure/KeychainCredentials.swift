@@ -25,10 +25,13 @@ public struct KeychainCredentials: Sendable {
         return found.sorted()
     }
 
-    /// Serviços presentes que não pertencem a nenhum diretório conhecido (perfis já removidos).
-    public static func stale(services: [String], knownDirectories: [URL]) -> [String] {
-        let known = Set(knownDirectories.map(serviceName(for:)))
-        return services.filter { !known.contains($0) }
+    /// Serviços que pertencem a diretórios órfãos de `Profiles/` (perfil removido pela metade).
+    /// Deliberadamente NÃO é "tudo que não é de um perfil conhecido": o usuário pode usar
+    /// `CLAUDE_CONFIG_DIR` próprio fora do app (`~/.claude-work`, pasta de outro app) e o launcher
+    /// respeita essas pastas — apagar a credencial delas destruiria um login em uso.
+    public static func stale(services: [String], orphanedProfileDirectories: [URL]) -> [String] {
+        let orphans = Set(orphanedProfileDirectories.map { serviceName(for: $0.appendingPathComponent("config", isDirectory: true)) })
+        return services.filter { orphans.contains($0) }
     }
 
     public func listServices() -> [String] {

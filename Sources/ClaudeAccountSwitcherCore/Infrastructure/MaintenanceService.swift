@@ -47,7 +47,7 @@ public struct MaintenanceService: Sendable {
         }
         report.orphanedDirectories = try store.orphanedProfileDirectories()
         if let keychain {
-            report.staleKeychainServices = KeychainCredentials.stale(services: keychain.listServices(), knownDirectories: profiles.map(\.directory))
+            report.staleKeychainServices = KeychainCredentials.stale(services: keychain.listServices(), orphanedProfileDirectories: report.orphanedDirectories)
         }
         report.shellBackups.sort { $0.path < $1.path }; report.claudeTempFiles.sort { $0.path < $1.path }
         return report
