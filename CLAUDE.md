@@ -103,6 +103,7 @@ Caminho base: raiz do repositório.
   **Convenção:** `save(_:)` só para criar; toda mutação de um perfil existente usa
   `update(id:_:)` (read-modify-write na fila) — `save` de um struct que atravessou await/UI
   reverte rename/uso gravados por outro escritor (lost update, corrigido em 2026-10-17).
+  `remove(_:)` apaga o contêiner `Profiles/<uuid>` inteiro (config + desktop).
 - `ActivationService.swift` — orquestra a troca de perfil: atualiza `launchctl setenv
   CLAUDE_CONFIG_DIR`, sincroniza app desktop, integra Paseo; rollback se falhar. Grava só
   `lastUsedAt`/`health` via `store.update`, nunca o snapshot recebido.
@@ -134,9 +135,11 @@ Caminho base: raiz do repositório.
   `forceQuitDesktopOnSwitch` permita (matar o Electron em escrita corrompe LevelDB/Cookies).
 - `KeychainCredentials.swift` — nome do serviço `Claude Code-credentials-<sha256(dir)[0:8]>`
   (fonte única, reutilizado pelo `ClaudeUsageService`), `delete(for:)` ao remover perfil,
-  `listServices()`/`stale(...)` para credenciais órfãs (via `security dump-keychain`).
+  `listServices()`/`stale(services:orphanedProfileDirectories:)` — só credenciais de `Profiles/<uuid>`
+  órfãos (via `security dump-keychain`); pastas externas (`~/.claude-work`) nunca são tocadas.
 - `ConversationLocator.swift` — "onde está minha conversa?": procura `projects/<slug>/<id>.jsonl`
-  em todos os perfis por prefixo do id, slug da pasta ou `cwd`; monta o comando `--resume`.
+  em todos os perfis por prefixo do id, slug da pasta ou `cwd`; monta `cd && claude --resume` (sem `cas switch`: o
+  launcher resolve o perfil dono).
 - `MaintenanceService.swift` — `scan()` lista e `apply()` remove: `Backups/shell-*` além dos 5
   mais novos por arquivo, `.claude.json.tmp.*` > 7 dias, diretórios órfãos de `Profiles/`,
   credenciais órfãs do Keychain. Menu "Manutenção…".
@@ -150,7 +153,8 @@ Caminho base: raiz do repositório.
   `<perfil>/.claude.json`) — `MigrationPlan.globalConfig`.
 - `PaseoIntegration.swift` — mantém symlink estável de config para compatibilidade com o daemon
   Paseo (ver comentário no arquivo para o motivo detalhado) e aponta `providers.claude.command`
-  para o launcher gerenciado (para o `--resume` seguir o perfil dono da conversa).
+  para o launcher gerenciado (para o `--resume` seguir o perfil dono da conversa). `revert()` desfaz
+  command/env na desinstalação.
 - `ProcessRunner.swift` — wrapper de `Process` com limite de output e captura de stdout/stderr.
 - `ShellIntegration.swift` — instala/atualiza o launcher transparente `bin/claude` no PATH gerenciado
   do app (marcadores `# >>> Claude Account Switcher >>>` / `# <<< ... <<<`); `install(..., casBinary:)`
@@ -158,6 +162,8 @@ Caminho base: raiz do repositório.
   zsh/bash/fish (paths escapados via `singleQuoted`). O launcher é **resume-aware**: para
   `--resume <id>`/`-r <id>` cujo id não está no perfil ativo mas está em exatamente um outro perfil
   gerenciado, usa o perfil dono da conversa (bug Paseo "No conversation found", 2026-10-23).
+  Exporta `CAS_LAUNCHED_DIR`; um `CLAUDE_CONFIG_DIR` herdado igual à marca (filho de sessão lançada
+  pelo launcher) é respeitado mesmo dentro da raiz gerenciada (auditoria 2026-11-13).
 
 ### `Sources/ClaudeAccountSwitcherApp/` (executável, UI)
 - `AppMain.swift` — `@main`, `App` SwiftUI, delega para `MenuBarController` via

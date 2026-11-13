@@ -127,3 +127,21 @@ correções) e em verde. Segunda leva (sete): sugestão de reparo, parsing/órf�
 cópia desktop recusada com app aberto + staging atômico, `importDirectory` (global config,
 symlink, sem órfão), localizador de conversas (id, slug, cwd, comando `--resume`), scan/apply
 da manutenção e timeout de encerramento do desktop sem force quit.
+
+## Auditoria 2026-11-13: mistura entre perfis e resíduos
+
+| # | Cenário | Resultado | Ação |
+|---|---|---|---|
+| D1 | "Manutenção…" tratava como órfã toda credencial `Claude Code-credentials-<hash>` que não fosse de perfil gerenciado — inclusive `~/.claude-work` (alias `claude-work`) e pastas de outros apps que o launcher respeita de propósito | **Bug confirmado** (credencial f6312d1d de `~/.claude-work` seria apagada) | `KeychainCredentials.stale(services:orphanedProfileDirectories:)` só devolve credenciais de `Profiles/<uuid>` órfãos |
+| D2 | Sessão viva no perfil A; usuário troca para B; a ferramenta Bash dessa sessão roda `claude mcp add`/`claude -p` → launcher sobrescrevia o `CLAUDE_CONFIG_DIR` herdado (está na raiz gerenciada) e gravava em B | **Bug confirmado** por teste com o launcher instalado | Launcher exporta `CAS_LAUNCHED_DIR`; herdado igual à marca é respeitado. Valor que veio só do `cas-env.sh` segue o ativo |
+| D3 | `ProfileStore.remove` apagava só `config`; `desktop` (cookies do app nativo) sobrava como órfão | Confirmado | Remove o contêiner `Profiles/<uuid>` inteiro |
+| D4 | Desinstalar não fazia `launchctl unsetenv` nem revertia o provider do Paseo (que apontava para o launcher apagado) | Confirmado | `SystemLaunchdEnvironment.unset()` + `PaseoIntegration.revert()` na desinstalação |
+| D5 | `resumeCommand` começava com `cas switch` (trocava o perfil global; falha com nomes duplicados) | Confirmado | Só `cd && claude --resume`; o launcher resolve o perfil dono |
+| D6 | `addAccount` deixava `Profiles/<uuid>` órfão quando o login falhava/cancelava | Confirmado (órfão de jul/2026 no disco) | Limpa diretório e credencial no `catch` |
+| D7 | Rollback da ativação com `save` do snapshot | Inalcançável, inconsistente com a convenção | `update(id:)` só de `lastUsedAt`/`health` |
+| D8 | Cópia da sessão desktop na migração nunca rodava (`desktopTarget` nunca passado) | Código morto | `migrateExisting` passa o alvo `~/.claude`; `execute` recusa com o app aberto e copia em staging |
+
+Limitações mantidas (documentadas, sem correção):
+- Trocas concorrentes GUI + `cas switch` podem intercalar os três passos (estado, launchd, symlink). Janela de milissegundos; exigiria lock entre processos.
+- Com `relaunchDesktopOnSwitch` desligado, o app nativo aberto pelo Dock usa sempre a pasta padrão (`~/Library/Application Support/Claude`), isto é, a conta logada ali, independente do perfil ativo.
+- Apps GUI (VS Code, Cursor) leem `launchctl getenv` uma vez no spawn: sessões abertas pela extensão depois de uma troca continuam no perfil de quando o app foi aberto.
