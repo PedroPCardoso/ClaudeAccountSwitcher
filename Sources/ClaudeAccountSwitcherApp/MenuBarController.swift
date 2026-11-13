@@ -378,7 +378,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 let profile = Profile(id: id, name: name, email: status.email, organization: status.organization, kind: status.kind, directory: directory, health: status.isAuthenticated ? .ready : .expired)
                 try self.store.save(profile)
                 DispatchQueue.main.async { self.rebuildMenu(); self.notify(AppStrings.t("Conta adicionada", "Account added")); self.offerDesktopSessionCopy(for: profile) }
-            } catch { DispatchQueue.main.async { self.showError(error) } }
+            } catch {
+                // O diretório foi criado antes do OAuth; sem perfil salvo ele viraria um órfão em Profiles/
+                // (com a credencial no Keychain, se o login chegou a gravar antes de falhar no status).
+                try? self.keychain.delete(for: directory)
+                try? FileManager.default.removeItem(at: directory.deletingLastPathComponent())
+                DispatchQueue.main.async { self.showError(error) }
+            }
         }
     }
 
