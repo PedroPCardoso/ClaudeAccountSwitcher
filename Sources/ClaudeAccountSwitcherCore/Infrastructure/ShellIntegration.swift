@@ -100,6 +100,10 @@ public struct ShellIntegrationManager: Sendable {
     /// erro). Só redireciona quando o id não existe no perfil ativo e existe em exatamente um outro
     /// perfil gerenciado; qualquer dúvida mantém o ativo e deixa o CLI decidir.
     ///
+    /// A marca `CAS_LAUNCHED_DIR` (exportada junto com `CLAUDE_CONFIG_DIR` antes do exec) identifica processos
+    /// filhos de uma sessão lançada por este launcher: quando o valor herdado é igual à marca, ele é respeitado
+    /// mesmo estando dentro da raiz gerenciada, para a sessão pai continuar dona do perfil após uma troca.
+    ///
     /// Um `CLAUDE_CONFIG_DIR` herdado FORA da raiz gerenciada (pasta própria de outro app, sandbox, fixture de teste) é
     /// respeitado: apps como o Operaí chamam `claude` pelo PATH com a pasta deles, e sobrescrevê-la punha as sessões e as
     /// limpezas desse app dentro do perfil pessoal. Valores dentro da raiz (o perfil exportado pelo cas-env.sh, mesmo
@@ -117,6 +121,12 @@ case "${CLAUDE_CONFIG_DIR:-}" in
   ''|"$MANAGED_ROOT"|"$MANAGED_ROOT"/*) ;;
   *) exec "$OFFICIAL" "$@" ;;
 esac
+# Filho de uma sessão que este launcher lançou (marca CAS_LAUNCHED_DIR igual ao valor herdado): a sessão
+# pai é dona do perfil. Sem isso, `claude mcp add`/`claude -p` rodados de dentro de uma sessão em A
+# gravariam no perfil ativo B depois de uma troca. Um valor que veio só do cas-env.sh não traz a marca.
+if [ -n "${CAS_LAUNCHED_DIR:-}" ] && [ "${CLAUDE_CONFIG_DIR:-}" = "$CAS_LAUNCHED_DIR" ] && [ -d "$CAS_LAUNCHED_DIR" ]; then
+  exec "$OFFICIAL" "$@"
+fi
 if [ ! -f "$STATE" ]; then echo 'Claude Account Switcher: perfil ativo não encontrado' >&2; exit 78; fi
 CONFIG_DIR=$(/usr/bin/plutil -extract directory raw -o - "$STATE" 2>/dev/null || true)
 case "$CONFIG_DIR" in file://*) CONFIG_DIR="${CONFIG_DIR#file://}";; esac
@@ -142,6 +152,7 @@ if [ -n "$RESUME_ID" ] && ! ls "$CONFIG_DIR"/projects/*/"$RESUME_ID".jsonl >/dev
   fi
 fi
 export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
+export CAS_LAUNCHED_DIR="$CONFIG_DIR"
 exec "$OFFICIAL" "$@"
 """
     }

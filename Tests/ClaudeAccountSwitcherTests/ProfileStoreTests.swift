@@ -116,6 +116,7 @@ enum ProfileStoreTests {
             ,("desktop activator waits the configured quit timeout without force quitting", testDesktopActivatorQuitTimeout)
             ,("launcher --resume follows the profile that owns the conversation", testLauncherResumeFollowsConversationProfile)
             ,("launcher keeps a CLAUDE_CONFIG_DIR chosen outside the managed root", testLauncherKeepsForeignConfigDir)
+            ,("launcher keeps the inherited CLAUDE_CONFIG_DIR of a session it launched itself", testLauncherKeepsInheritedDirOfLaunchedSession)
             ,("paseo integrate points the claude provider command at the launcher", testPaseoIntegrateSetsCommandToLauncher)
         ]
         var failures = 0
@@ -1143,6 +1144,38 @@ enum ProfileStoreTests {
         // Um prefixo parecido com a raiz gerenciada não conta como dentro dela.
         let lookalike = app.path + "-copia/config"
         try check(try launched(with: lookalike) == lookalike, "a sibling folder that only shares the prefix is foreign")
+    }
+
+    static func testLauncherKeepsInheritedDirOfLaunchedSession() throws {
+        let root = try temporaryRoot(); let app = root.appendingPathComponent("app-support"); let store = try ProfileStore(root: app)
+        let idA = UUID(); let dirA = try store.createManagedDirectory(id: idA); let a = Profile(id: idA, name: "A", directory: dirA)
+        let idB = UUID(); let dirB = try store.createManagedDirectory(id: idB); let b = Profile(id: idB, name: "B", directory: dirB)
+        try store.save(a); try store.save(b); try store.setActive(ActiveProfile(id: a.id, directory: dirA))
+        let shell = ShellIntegrationManager(appSupport: app); let home = root.appendingPathComponent("home"); try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let fakeOfficial = root.appendingPathComponent("fake-claude")
+        try "#!/bin/sh\nprintf 'CLAUDE_CONFIG_DIR=%s\\n' \"$CLAUDE_CONFIG_DIR\"\nprintf 'CAS_LAUNCHED_DIR=%s\\n' \"${CAS_LAUNCHED_DIR:-}\"\n".write(to: fakeOfficial, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeOfficial.path)
+        try shell.install(home: home, officialBinary: fakeOfficial)
+        func launched(env: [String: String]) throws -> (config: String, mark: String) {
+            let result = try ProcessRunner().run(executable: shell.launcherURL(), environment: env)
+            func value(_ key: String) -> String {
+                result.stdout.split(separator: "\n").first(where: { $0.hasPrefix(key + "=") }).map { String($0.dropFirst(key.count + 1)) } ?? ""
+            }
+            return (value("CLAUDE_CONFIG_DIR"), value("CAS_LAUNCHED_DIR"))
+        }
+        // 1ª invocação: resolve o ativo e deixa a marca para os filhos.
+        let first = try launched(env: [:])
+        try check(first.config == dirA.path && first.mark == dirA.path, "launcher must export CAS_LAUNCHED_DIR equal to the chosen dir: \(first)")
+        // Sessão viva em A (lançada pelo launcher) enquanto o ativo virou B: um `claude` filho dela fica em A.
+        try store.setActive(ActiveProfile(id: b.id, directory: dirB))
+        let child = try launched(env: ["CLAUDE_CONFIG_DIR": dirA.path, "CAS_LAUNCHED_DIR": dirA.path])
+        try check(child.config == dirA.path, "a child of a launched session must keep its parent's profile, got \(child.config)")
+        // Valor herdado só do cas-env.sh (sem marca) ou com marca divergente segue o ativo.
+        try check(try launched(env: ["CLAUDE_CONFIG_DIR": dirA.path]).config == dirB.path, "env-script value without the mark must follow the active profile")
+        try check(try launched(env: ["CLAUDE_CONFIG_DIR": dirA.path, "CAS_LAUNCHED_DIR": dirB.path]).config == dirB.path, "a mark that does not match the inherited value must not pin the profile")
+        // Marca apontando para diretório que já não existe (perfil removido) não pode travar: segue o ativo.
+        let gone = app.appendingPathComponent("Profiles/00000000-0000-0000-0000-000000000000/config").path
+        try check(try launched(env: ["CLAUDE_CONFIG_DIR": gone, "CAS_LAUNCHED_DIR": gone]).config == dirB.path, "a missing inherited dir must fall back to the active profile")
     }
 
     static func testPaseoIntegrateSetsCommandToLauncher() throws {
