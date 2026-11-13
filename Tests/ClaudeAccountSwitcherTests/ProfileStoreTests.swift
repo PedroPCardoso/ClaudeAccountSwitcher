@@ -546,11 +546,19 @@ enum ProfileStoreTests {
 
     static func testRemoveProfile() throws {
         let store = try ProfileStore(root: try temporaryRoot())
-        let profile = Profile(id: UUID(), name: "Remover", directory: try store.createManagedDirectory(id: UUID()))
+        let id = UUID()
+        let profile = Profile(id: id, name: "Remover", directory: try store.createManagedDirectory(id: id))
         try store.save(profile)
+        // A sessão do app nativo vive no irmão `desktop`; remover o perfil tem de levá-la junto
+        // (o alerta promete apagar "sessões e credencial", e cookies logados não podem sobrar).
+        try FileManager.default.createDirectory(at: profile.desktopDirectory, withIntermediateDirectories: true)
+        try "cookie-bytes".write(to: profile.desktopDirectory.appendingPathComponent("Cookies"), atomically: true, encoding: .utf8)
         try store.remove(profile)
         try check(try store.list().isEmpty, "removed profile remains in metadata")
         try check(!FileManager.default.fileExists(atPath: profile.directory.path), "removed profile directory still exists")
+        try check(!FileManager.default.fileExists(atPath: profile.desktopDirectory.path), "desktop session of the removed profile was left on disk")
+        try check(!FileManager.default.fileExists(atPath: profile.directory.deletingLastPathComponent().path), "Profiles/<uuid> container was left behind")
+        try check(try store.orphanedProfileDirectories().isEmpty, "removal must not create an orphan for maintenance to find")
     }
 
     static func testConcurrentSaves() async throws {

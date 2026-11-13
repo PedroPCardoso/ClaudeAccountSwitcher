@@ -66,7 +66,11 @@ public final class ProfileStore: @unchecked Sendable {
             // Remove o diretório de credenciais PRIMEIRO. Se apagássemos o metadata antes e o
             // removeItem falhasse, o diretório ficaria órfão no disco sem rastreio no JSON.
             // Nesta ordem, uma falha aqui aborta a remoção com o metadata ainda íntegro.
-            if fileManager.fileExists(atPath: profile.directory.path) { try fileManager.removeItem(at: profile.directory) }
+            // Layout gerenciado é `Profiles/<uuid>/config` com o irmão `desktop` (sessão do app nativo):
+            // apaga o contêiner inteiro para não deixar cookies logados nem um órfão para a manutenção.
+            let container = profile.directory.deletingLastPathComponent()
+            let target = container.lastPathComponent == profile.id.uuidString ? container : profile.directory
+            if fileManager.fileExists(atPath: target.path) { try fileManager.removeItem(at: target) }
             let profiles = existing.filter { $0.id != profile.id }
             try atomicWrite(try encoder.encode(profiles), to: metadataURL)
             if (try activeLocked()?.id) == profile.id, fileManager.fileExists(atPath: activeURL.path) { try fileManager.removeItem(at: activeURL) }
