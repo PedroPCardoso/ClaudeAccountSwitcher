@@ -89,6 +89,12 @@ Caminho base: raiz do repositório.
   (Opus/Sonnet/Haiku) com os multiplicadores de cache da Anthropic (cache lido ~0,1x, escrito 5m
   1,25x, escrito 1h 2x, output ~5x); `costUSD(model:tokens:)` → `nil` p/ modelo desconhecido.
   Espelha a lógica do `CostUsagePricing` do CodexBar/`ccusage` (feature 1.3.6).
+- `RefreshPlanner.swift` — `RefreshScope`/`RefreshPolicy`/`RefreshPlanner`: decide POR PERFIL o que o
+  ciclo de refresh faz (buscar uso? subir o CLI `claude auth status`?). Ativo: uso todo ciclo;
+  inativos: a cada 5 min; CLI de auth: a cada 30 min (5 min se o perfil não está `ready` ou o token
+  falhou); janela aberta (`onDemand`) atualiza uso de todos; botão Atualizar (`manual`) também re-checa
+  auth; detalhes do Cursor a cada 10 min. Puro e testado — **não** voltar a rodar o CLI todo minuto
+  (cada spawn custa ~150 MB de pico e ~0,25 s de CPU por perfil).
 - `ActiveStateRepair.swift` — `suggestion(profiles:launchdDirectory:)`: perfil a restaurar quando
   `active-profile.json` está corrompido (casa com o `CLAUDE_CONFIG_DIR` do launchd, senão o
   `lastUsedAt` mais recente). Usado pelo item "reparar…" do menu.
@@ -124,6 +130,13 @@ Caminho base: raiz do repositório.
   `GetAggregatedUsageEvents`, `GetDailySpendByCategory`); degradação graciosa se agregado/diário
   falharem; reusa `UsageTransport`/`UsageRetryPolicy`.
 - `CursorUsageStore.swift` — snapshot atômico em `cursor-usage.json` no root do app.
+- `JSONLScanner.swift` — leitor de `.jsonl` em streaming (blocos de 1 MB, `memmem` descarta linhas sem
+  `"type":"assistant"` sem copiar/parsear, retoma de um offset). Base de `ClaudeUsageService.tokenUsage`
+  e `UsageHistoryService`: arquivo que só cresceu lê só os bytes novos (estado = offset + impressão
+  digital do início + mapa de dedup; arquivo "frio" >24h guarda só o total). **Convenção:** todo
+  `autoreleasepool` ali é obrigatório — sem ele o `FileHandle.read`/`JSONSerialization` acumulam
+  centenas de MB numa thread de background até o fim da tarefa (medido: pico 504 MB → 27 MB em 670 MB
+  de logs; 33 s → 5,7 s na leitura fria; append de 1 linha em sessão de 21 MB: 1,1 s → 1 ms).
 - `UsageHistoryService.swift` — parseia os `.jsonl` de sessão em séries diárias por perfil, com a
   quebra por tipo de token e o custo USD estimado (`ModelPricing`). Deduplica cada
   `message.id:requestId` uma vez, dentro do arquivo E entre arquivos da conta (sessões retomadas);
@@ -180,6 +193,10 @@ Caminho base: raiz do repositório.
   `NSHostingView`.
 - `QuickSwitcher.swift` — SwiftUI compacto (popover) para busca/troca rápida de perfil por
   nome/email.
+- Ciclo de refresh (`MenuBarController`): timer de 60 s com tolerância (300 s em Modo de Baixo
+  Consumo), **pausado com a tela apagada/sessão inativa** e retomado com refresh imediato; janelas
+  (`Uso`, `Análise`, `Cursor`...) são liberadas ao fechar (`NSWindow.willCloseNotification`) e a
+  `AnalysisWindowController` calcula a série fora da main thread.
 - `UsageView.swift` — SwiftUI da janela "Uso do Claude": cards por conta com barras de progresso,
   percentuais e horários de reset.
 - `UsageWindowController.swift` — `NSWindowController` que hospeda `UsageView`.
@@ -198,7 +215,7 @@ Caminho base: raiz do repositório.
   bin gerenciado via `ShellIntegrationManager.install(..., casBinary:)` (feature 1.3.5, issue #35).
 
 ### `Tests/ClaudeAccountSwitcherTests/`
-- `ProfileStoreTests.swift` — único arquivo de teste do projeto (102 testes). Ver seção de
+- `ProfileStoreTests.swift` — único arquivo de teste do projeto (113 testes). Ver seção de
   convenção de teste abaixo.
 
 ### Outros diretórios

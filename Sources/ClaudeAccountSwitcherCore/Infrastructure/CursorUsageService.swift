@@ -32,7 +32,12 @@ public struct CursorUsageService: Sendable {
         }
     }
 
-    public func fetch() async throws -> CursorUsageSnapshot {
+    /// - Parameters:
+    ///   - includeDetails: `false` faz só 1 RPC (`GetCurrentPeriodUsage`, o que alimenta a barra de
+    ///     menu e o alerta) e reaproveita `models`/`daily` de `previous` — esses dois mudam devagar e
+    ///     custam 2 RPCs a mais por ciclo. Só vale se `previous` é do MESMO ciclo de faturamento;
+    ///     caso contrário os detalhes são buscados de qualquer forma.
+    public func fetch(includeDetails: Bool = true, previous: CursorUsageSnapshot? = nil) async throws -> CursorUsageSnapshot {
         let credentials: CursorCredentials
         do {
             credentials = try credentialProvider()
@@ -46,6 +51,17 @@ public struct CursorUsageService: Sendable {
         let periodData = try await post(method: "GetCurrentPeriodUsage", body: [:], token: credentials.accessToken)
         guard let planUsage = Self.parsePeriodUsage(periodData) else {
             throw CursorUsageError.invalidResponse
+        }
+
+        if !includeDetails, let previous, previous.planUsage?.billingCycleStart == planUsage.billingCycleStart {
+            return CursorUsageSnapshot(
+                fetchedAt: .now,
+                email: credentials.email,
+                plan: credentials.membershipType,
+                planUsage: planUsage,
+                models: previous.models,
+                daily: previous.daily,
+                source: "Cursor Dashboard API")
         }
 
         let startMs = Int64(planUsage.billingCycleStart.timeIntervalSince1970 * 1000)

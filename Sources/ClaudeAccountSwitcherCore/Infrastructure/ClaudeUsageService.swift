@@ -156,40 +156,49 @@ public struct ClaudeUsageService: Sendable {
         return ClaudeUsageSnapshot(plan: root["plan"] as? String ?? "Claude Pro/Max", quotas: quotas, source: "Anthropic OAuth (Claude Code)")
     }
 
+    // Formatadores reutilizados: criar um `ISO8601DateFormatter` é caro e esta função roda por
+    // linha de log no histórico (antes eram 2 alocações por chamada). O acesso é serializado por `isoLock`.
+    nonisolated(unsafe) private static let fractionalISO: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
+    }()
+    nonisolated(unsafe) private static let plainISO = ISO8601DateFormatter()
+    private static let isoLock = NSLock()
+
     /// The usage endpoint returns `resets_at` with fractional seconds
     /// (e.g. `2026-07-20T22:40:00.121846+00:00`), which the default `ISO8601DateFormatter`
     /// rejects. Try the fractional format first, then fall back to the plain one.
     public static func parseResetDate(_ string: String?) -> Date? {
         guard let string else { return nil }
-        let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: string) { return date }
-        return ISO8601DateFormatter().date(from: string)
+        isoLock.lock(); defer { isoLock.unlock() }
+        return fractionalISO.date(from: string) ?? plainISO.date(from: string)
     }
 
     public func tokenUsage(profileDirectory: URL) -> ClaudeTokenUsage {
         let projects = profileDirectory.appendingPathComponent("projects", isDirectory: true)
-        guard let enumerator = FileManager.default.enumerator(at: projects, includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey], options: [.skipsHiddenFiles]) else {
+        guard let enumerator = FileManager.default.enumerator(at: projects, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey], options: [.skipsHiddenFiles]) else {
             return ClaudeTokenUsage(input: 0, output: 0, cacheRead: 0, cacheCreation: 0, messageCount: 0)
         }
-        // Soma o total por arquivo, reaproveitando o cache quando o `.jsonl` não mudou
-        // (mesmos mtime + tamanho). Antes, todos os arquivos eram relidos e reprocessados a
-        // cada refresh de 60s, com custo crescendo indefinidamente com o histórico.
+        // Soma o total por arquivo. Arquivo inalterado (mesmo mtime + tamanho) reaproveita o total;
+        // arquivo que só CRESCEU (sessão ativa, append-only) processa apenas os bytes novos, a partir
+        // do offset salvo; só um arquivo reescrito/truncado é relido do início.
         var total = ClaudeTokenUsage.zero
         for case let url as URL in enumerator where url.pathExtension == "jsonl" {
             let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
             let signature = TokenUsageCache.Signature(modifiedAt: values?.contentModificationDate, size: values?.fileSize ?? -1)
-            if let cached = tokenCache.usage(for: url.path, matching: signature) {
-                total = total + cached
+            let previous = tokenCache.entry(for: url.path)
+            if let previous, previous.signature == signature {
+                total = total + previous.state.total
                 continue
             }
-            let parsed = Self.parseTokenFile(url)
-            tokenCache.store(parsed, for: url.path, signature: signature)
-            total = total + parsed
+            let state = Self.scanTokenFile(url, signature: signature, previous: previous?.state)
+            tokenCache.store(state, for: url.path, signature: signature)
+            total = total + state.total
         }
         return total
     }
 
-    /// Lê e soma os tokens de um único arquivo `.jsonl` de sessão, deduplicando mensagens repetidas.
+    /// Lê e soma os tokens de um `.jsonl` de sessão (a partir do offset salvo, se o arquivo só
+    /// cresceu), deduplicando mensagens repetidas.
     ///
     /// O Claude Code grava vários chunks de streaming para a MESMA mensagem, todos com
     /// `message.id` + `requestId` iguais e o mesmo `usage`. Somar linha a linha conta a mesma
@@ -198,14 +207,18 @@ public struct ClaudeUsageService: Sendable {
     /// do CodexBar / `ccusage`; ver `UsageHistoryService.parseFile`. Logs antigos sem os dois IDs
     /// são tratados como distintos, para não descartar uso legítimo. `messageCount` passa a contar
     /// mensagens deduplicadas, não linhas.
-    private static func parseTokenFile(_ url: URL) -> ClaudeTokenUsage {
-        guard let handle = try? FileHandle(forReadingFrom: url), let data = try? handle.readToEnd(), let text = String(data: data, encoding: .utf8) else {
-            return .zero
-        }
+    private static func scanTokenFile(_ url: URL, signature: TokenUsageCache.Signature, previous: TokenFileState?) -> TokenFileState {
+        let head = JSONLScanner.head(of: url)
         var keyed: [String: ClaudeTokenUsage] = [:]
-        var total = ClaudeTokenUsage.zero
-        for line in text.split(separator: "\n") {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any], object["type"] as? String == "assistant", let message = object["message"] as? [String: Any], let usage = message["usage"] as? [String: Any] else { continue }
+        var unkeyed = ClaudeTokenUsage.zero
+        var offset: UInt64 = 0
+        // Só retoma se o estado deduplicado ainda existe (não foi "congelado"), o arquivo não
+        // encolheu e o começo é o mesmo (não foi reescrito).
+        if let previous, let previousKeyed = previous.keyed, UInt64(max(0, signature.size)) >= previous.offset, head.starts(with: previous.head) {
+            keyed = previousKeyed; unkeyed = previous.unkeyed; offset = previous.offset
+        }
+        let end = JSONLScanner.scan(url, from: offset) { line in
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any], object["type"] as? String == "assistant", let message = object["message"] as? [String: Any], let usage = message["usage"] as? [String: Any] else { return }
             let entry = ClaudeTokenUsage(
                 input: (usage["input_tokens"] as? NSNumber)?.intValue ?? 0,
                 output: (usage["output_tokens"] as? NSNumber)?.intValue ?? 0,
@@ -215,10 +228,14 @@ public struct ClaudeUsageService: Sendable {
             if let messageId = message["id"] as? String, let requestId = object["requestId"] as? String {
                 keyed["\(messageId):\(requestId)"] = entry
             } else {
-                total = total + entry
+                unkeyed = unkeyed + entry
             }
         }
-        return keyed.values.reduce(total, +)
+        let total = keyed.values.reduce(unkeyed, +)
+        // Arquivos que não mudam há dias não crescem mais: descarta o mapa de dedup (RAM) e guarda
+        // só o total. Se um deles voltar a crescer, é relido do início.
+        let isCold = signature.modifiedAt.map { Date().timeIntervalSince($0) > TokenFileState.coldAfter } ?? false
+        return TokenFileState(keyed: isCold ? nil : keyed, unkeyed: unkeyed, offset: end ?? 0, head: head, total: total)
     }
 
     private func accessToken(profileDirectory: URL) -> String? {
@@ -237,22 +254,33 @@ public struct ClaudeUsageService: Sendable {
     }
 }
 
+/// Estado incremental de um `.jsonl`: total já somado + o necessário para retomar a leitura
+/// de onde parou (offset, impressão digital do início e o mapa de deduplicação).
+struct TokenFileState: Sendable {
+    /// Depois de 24h sem escrita o arquivo é tratado como "frio": só o total é mantido.
+    static let coldAfter: TimeInterval = 24 * 3600
+    var keyed: [String: ClaudeTokenUsage]?
+    var unkeyed: ClaudeTokenUsage
+    var offset: UInt64
+    var head: Data
+    var total: ClaudeTokenUsage
+}
+
 /// Cache thread-safe de tokens por arquivo `.jsonl`, chaveado por (mtime, tamanho). Como
-/// sessões são majoritariamente append-only, um refresh típico só relê os poucos arquivos
-/// que mudaram. Referência de longa vida mantida pelo `ClaudeUsageService`.
+/// sessões são majoritariamente append-only, um refresh típico só lê os bytes novos dos poucos
+/// arquivos que mudaram. Referência de longa vida mantida pelo `ClaudeUsageService`.
 final class TokenUsageCache: @unchecked Sendable {
     struct Signature: Equatable { let modifiedAt: Date?; let size: Int }
     private let lock = NSLock()
-    private var entries: [String: (signature: Signature, usage: ClaudeTokenUsage)] = [:]
+    private var entries: [String: (signature: Signature, state: TokenFileState)] = [:]
 
-    func usage(for path: String, matching signature: Signature) -> ClaudeTokenUsage? {
+    func entry(for path: String) -> (signature: Signature, state: TokenFileState)? {
         lock.lock(); defer { lock.unlock() }
-        guard let entry = entries[path], entry.signature == signature else { return nil }
-        return entry.usage
+        return entries[path]
     }
 
-    func store(_ usage: ClaudeTokenUsage, for path: String, signature: Signature) {
+    func store(_ state: TokenFileState, for path: String, signature: Signature) {
         lock.lock(); defer { lock.unlock() }
-        entries[path] = (signature, usage)
+        entries[path] = (signature, state)
     }
 }

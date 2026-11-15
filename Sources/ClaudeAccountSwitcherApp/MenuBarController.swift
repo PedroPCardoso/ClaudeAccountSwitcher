@@ -62,10 +62,19 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var cursorAnalysisWindowController: CursorAnalysisWindowController?
     private var usageRefreshTimer: Timer?
     private var isRefreshingUsage = false
+    private var lastAuthCheck: [UUID: Date] = [:]
+    private var lastUsageFetch: [UUID: Date] = [:]
+    private var lastCursorDetailsFetch: Date?
+    private var lastStatusBarSource = AppPreferences.statusBarUsageSource
+
     private var cursorSnapshot: CursorUsageSnapshot?
     private var fiveHourAlert = FiveHourAlertTracker()
     private var weeklyCreditsAlert = WeeklyCreditsAlertTracker()
     private var cursorBudgetAlert = CursorBudgetAlertTracker()
+
+    /// Intervalo do timer; em Modo de Baixo Consumo o app só acorda a cada 5 min.
+    private static var timerInterval: TimeInterval { ProcessInfo.processInfo.isLowPowerModeEnabled ? 300 : 60 }
+    private let refreshPolicy = RefreshPolicy()
 
     override init() {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude Account Switcher", isDirectory: true)
@@ -135,17 +144,71 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             statusItem.button?.image = NSImage(systemSymbolName: "person.2.circle", accessibilityDescription: "Claude accounts")
         }
         installShortcutMonitor(); rebuildMenu(); refreshProfileMetadata()
-        usageRefreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshProfileMetadata() }
+        scheduleRefreshTimer()
+        // Tela apagada = ninguém vê a barra de menu nem o alerta: pausa o timer (zero wakeups) e
+        // faz um refresh ao acordar. Idem para a sessão de outro usuário (troca rápida de usuário).
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
+            workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.pauseRefreshTimer() }
+            }
+        }
+        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.scheduleRefreshTimer(); self?.refreshProfileMetadata() }
+            }
+        }
+        NotificationCenter.default.addObserver(forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.scheduleRefreshTimer() }
         }
         // Reflete a mudança do toggle "mostrar uso na barra" imediatamente, sem esperar o
-        // próximo refresh de 60s.
+        // próximo refresh. `didChangeNotification` dispara para QUALQUER escrita em UserDefaults
+        // do processo (frames de janela, seleção da análise...), então só age se a fonte mudou —
+        // antes cada disparo relia e decodificava o profiles.json do disco.
         NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.updateStatusItemUsage() }
+            Task { @MainActor in
+                guard let self else { return }
+                let source = AppPreferences.statusBarUsageSource
+                guard source != self.lastStatusBarSource else { return }
+                self.lastStatusBarSource = source
+                self.updateStatusItemUsage()
+            }
+        }
+        // Libera a janela (e o SwiftUI/Charts/cache de histórico dela) quando fechada; antes
+        // os controllers ficavam vivos para sempre depois da primeira abertura.
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] note in
+            guard let window = note.object as? NSWindow else { return }
+            let id = ObjectIdentifier(window)
+            Task { @MainActor in self?.releaseClosedWindow(id) }
         }
         if let official = try? locator.locate() { try? shell.install(home: FileManager.default.homeDirectoryForCurrentUser, officialBinary: official, casBinary: MenuBarController.bundledCASBinary()) }
         if let active = try? store.active() { try? SystemLaunchdEnvironment().set(active.directory.path); try? paseo.updateSymlink(to: active.directory) }
         try? loginItem.setEnabled(true)
+    }
+
+    private func scheduleRefreshTimer() {
+        usageRefreshTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.timerInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshProfileMetadata() }
+        }
+        // Tolerância deixa o macOS agrupar este wakeup com outros (menos CPU wakes, menos energia).
+        timer.tolerance = Self.timerInterval / 6
+        RunLoop.main.add(timer, forMode: .common)
+        usageRefreshTimer = timer
+    }
+
+    private func pauseRefreshTimer() {
+        usageRefreshTimer?.invalidate()
+        usageRefreshTimer = nil
+    }
+
+    private func releaseClosedWindow(_ id: ObjectIdentifier) {
+        func matches(_ controller: NSWindowController?) -> Bool { controller?.window.map(ObjectIdentifier.init) == id }
+        if matches(preferencesWindowController) { preferencesWindowController = nil }
+        if matches(usageWindowController) { usageWindowController = nil }
+        if matches(analysisWindowController) { analysisWindowController = nil }
+        if matches(cursorUsageWindowController) { cursorUsageWindowController = nil }
+        if matches(cursorAnalysisWindowController) { cursorAnalysisWindowController = nil }
     }
 
     /// `nil` quando o estado ativo é legível e aponta para um perfil existente; senão o motivo.
@@ -444,25 +507,25 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
         if usageWindowController == nil {
-            usageWindowController = UsageWindowController(profiles: profiles, activeID: activeID, isRefreshing: isRefreshingUsage, onRefresh: { [weak self] in self?.refreshProfileMetadata() })
+            usageWindowController = UsageWindowController(profiles: profiles, activeID: activeID, isRefreshing: isRefreshingUsage, onRefresh: { [weak self] in self?.refreshProfileMetadata(scope: .manual) })
         } else {
             usageWindowController?.update(profiles: profiles, activeID: activeID, isRefreshing: isRefreshingUsage)
         }
         usageWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
-        refreshProfileMetadata()
+        refreshProfileMetadata(scope: .onDemand)
     }
 
     @objc private func openAnalysis() {
         let profiles = (try? store.list()) ?? []
         if analysisWindowController == nil {
-            analysisWindowController = AnalysisWindowController(profiles: profiles, isRefreshing: isRefreshingUsage, onRefresh: { [weak self] in self?.refreshProfileMetadata() })
+            analysisWindowController = AnalysisWindowController(profiles: profiles, isRefreshing: isRefreshingUsage, onRefresh: { [weak self] in self?.refreshProfileMetadata(scope: .manual) })
         } else {
             analysisWindowController?.update(profiles: profiles, isRefreshing: isRefreshingUsage)
         }
         analysisWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
-        refreshProfileMetadata()
+        refreshProfileMetadata(scope: .onDemand)
     }
 
     @objc private func openCursorUsage() {
@@ -470,13 +533,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             cursorUsageWindowController = CursorUsageWindowController(
                 snapshot: cursorSnapshot,
                 isRefreshing: isRefreshingUsage,
-                onRefresh: { [weak self] in self?.refreshProfileMetadata() })
+                onRefresh: { [weak self] in self?.refreshProfileMetadata(scope: .manual) })
         } else {
             cursorUsageWindowController?.update(snapshot: cursorSnapshot, isRefreshing: isRefreshingUsage)
         }
         cursorUsageWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
-        refreshProfileMetadata()
+        refreshProfileMetadata(scope: .onDemand)
     }
 
     @objc private func openCursorAnalysis() {
@@ -484,13 +547,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             cursorAnalysisWindowController = CursorAnalysisWindowController(
                 snapshot: cursorSnapshot,
                 isRefreshing: isRefreshingUsage,
-                onRefresh: { [weak self] in self?.refreshProfileMetadata() })
+                onRefresh: { [weak self] in self?.refreshProfileMetadata(scope: .manual) })
         } else {
             cursorAnalysisWindowController?.update(snapshot: cursorSnapshot, isRefreshing: isRefreshingUsage)
         }
         cursorAnalysisWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
-        refreshProfileMetadata()
+        refreshProfileMetadata(scope: .onDemand)
     }
 
     @objc private func migrateExisting() {
@@ -620,40 +683,66 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         return lines
     }
 
-    private func refreshProfileMetadata() {
+    private func refreshProfileMetadata(scope: RefreshScope = .scheduled) {
         guard !isRefreshingUsage else { return }   // evita ciclos concorrentes (timer + refresh manual)
         isRefreshingUsage = true
         refreshPreferences()                        // reflete o estado de "carregando" imediatamente
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
+        let now = Date()
+
+        let plans = profiles.map { profile in
+            (profile: profile, plan: RefreshPlanner.plan(
+                profile: profile, isActive: profile.id == activeID, scope: scope, now: now,
+                lastUsageFetch: lastUsageFetch[profile.id], lastAuthCheck: lastAuthCheck[profile.id], policy: refreshPolicy))
+        }
         let shouldRefreshCursor = CursorMonitoring.isEnabled()
+        let cursorDetails = RefreshPlanner.shouldFetchCursorDetails(scope: scope, now: now, lastFetch: lastCursorDetailsFetch, policy: refreshPolicy)
+
         Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
             var weeklyCreditsHits: [WeeklyCreditsAlertHit] = []
-            for profile in profiles {
-                guard let status = try? self.auth.status(profileDirectory: profile.directory) else { continue }
-                // `update` mescla no registro atual: este ciclo pode levar dezenas de segundos
-                // (CLI + rede por perfil) e `save(profile)` reverteria um rename/ativação feito
-                // nesse meio-tempo com o snapshot velho de `profiles`.
-                var updated = (try? self.store.update(id: profile.id) { current in
-                    current.email = status.email ?? current.email
-                    current.organization = status.organization ?? current.organization
-                    current.kind = status.kind
-                    current.health = status.isAuthenticated ? .ready : .expired
-                }) ?? profile
-                if let snapshot = try? await self.usage.fetch(profileDirectory: profile.directory) {
-                    var snapshot = snapshot
-                    snapshot = ClaudeUsageSnapshot(fetchedAt: snapshot.fetchedAt, plan: snapshot.plan, quotas: snapshot.quotas, source: snapshot.source, tokens: self.usage.tokenUsage(profileDirectory: profile.directory))
-                    updated.usage = snapshot
-                    updated = (try? self.store.update(id: profile.id) { $0.usage = snapshot }) ?? updated
-                    if updated.id == activeID {
-                        let active = updated; let snap = snapshot
-                        await MainActor.run { self.checkFiveHourAlert(profile: active, snapshot: snap) }
+            for (profile, plan) in plans {
+                var updated = profile
+                var snapshot: ClaudeUsageSnapshot?
+                var tokenProblem = false
+                if plan.fetchUsage {
+                    do {
+                        let fetched = try await self.usage.fetch(profileDirectory: profile.directory)
+                        snapshot = ClaudeUsageSnapshot(fetchedAt: fetched.fetchedAt, plan: fetched.plan, quotas: fetched.quotas, source: fetched.source, tokens: self.usage.tokenUsage(profileDirectory: profile.directory))
+                        await MainActor.run { self.lastUsageFetch[profile.id] = Date() }
+                    } catch ClaudeUsageError.tokenUnavailable, ClaudeUsageError.unauthorized {
+                        tokenProblem = true
+                    } catch {
+                        // Erro de rede/servidor: mantém o último uso conhecido; não vale gastar o CLI.
                     }
-                    let current = updated; let snap = snapshot
-                    if let hit = await MainActor.run(body: { self.checkWeeklyCreditsAlert(profile: current, snapshot: snap) }) {
-                        weeklyCreditsHits.append(hit)
+                }
+                // `claude auth status` sobe um processo do CLI (~150 MB, ~0,25 s de CPU): só roda
+                // quando o TTL venceu, no refresh manual, ou quando o token do perfil falhou.
+                if plan.checkAuth || (tokenProblem && plan.authRetryAllowed) {
+                    if let status = try? self.auth.status(profileDirectory: profile.directory) {
+                        // `update` mescla no registro atual: este ciclo pode levar dezenas de segundos
+                        // (CLI + rede por perfil) e `save(profile)` reverteria um rename/ativação feito
+                        // nesse meio-tempo com o snapshot velho de `profiles`.
+                        updated = (try? self.store.update(id: profile.id) { current in
+                            current.email = status.email ?? current.email
+                            current.organization = status.organization ?? current.organization
+                            current.kind = status.kind
+                            current.health = status.isAuthenticated ? .ready : .expired
+                        }) ?? profile
                     }
+                    await MainActor.run { self.lastAuthCheck[profile.id] = Date() }
+                }
+                guard let snapshot else { continue }
+                updated.usage = snapshot
+                updated = (try? self.store.update(id: profile.id) { $0.usage = snapshot }) ?? updated
+                if updated.id == activeID {
+                    let active = updated; let snap = snapshot
+                    await MainActor.run { self.checkFiveHourAlert(profile: active, snapshot: snap) }
+                }
+                let current = updated; let snap = snapshot
+                if let hit = await MainActor.run(body: { self.checkWeeklyCreditsAlert(profile: current, snapshot: snap) }) {
+                    weeklyCreditsHits.append(hit)
                 }
             }
             if !weeklyCreditsHits.isEmpty {
@@ -661,18 +750,20 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 await MainActor.run { self.notifyWeeklyCreditsAlert(hits) }
             }
             if shouldRefreshCursor {
-                await self.refreshCursorUsage()
+                await self.refreshCursorUsage(includeDetails: cursorDetails)
             }
             await MainActor.run { self.isRefreshingUsage = false; self.rebuildMenu(); self.refreshPreferences() }
         }
     }
 
-    private func refreshCursorUsage() async {
+    private func refreshCursorUsage(includeDetails: Bool) async {
         do {
-            let snapshot = try await cursorUsage.fetch()
+            let previous = await MainActor.run { self.cursorSnapshot }
+            let snapshot = try await cursorUsage.fetch(includeDetails: includeDetails, previous: previous)
             try? cursorUsageStore.save(snapshot)
             await MainActor.run {
                 self.cursorSnapshot = snapshot
+                if includeDetails { self.lastCursorDetailsFetch = Date() }
                 self.checkCursorBudgetAlert(snapshot)
             }
         } catch let error as CursorUsageError where error == .unauthorized || error == .tokenExpired {

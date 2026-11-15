@@ -50,12 +50,13 @@ public struct UsageHistoryService: Sendable {
                 let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
                 let signature = DailyTokenUsageCache.Signature(modifiedAt: values?.contentModificationDate, size: values?.fileSize ?? -1)
                 let rows: [ParsedRow]
-                if let cached = cache.rows(for: url.path, matching: signature) {
-                    rows = cached
+                let previous = cache.entry(for: url.path)
+                if let previous, previous.signature == signature {
+                    rows = previous.state.rows
                 } else {
-                    let parsed = Self.parseFile(url, calendar: calendar)
-                    cache.store(parsed, for: url.path, signature: signature)
-                    rows = parsed
+                    let state = Self.scanFile(url, signature: signature, previous: previous?.state, calendar: calendar)
+                    cache.store(state, for: url.path, signature: signature)
+                    rows = state.rows
                 }
                 for row in rows {
                     if let key = row.key, !seenKeys.insert(key).inserted { continue }
@@ -71,25 +72,27 @@ public struct UsageHistoryService: Sendable {
         }
     }
 
-    /// Lê um único `.jsonl` e devolve as mensagens `assistant` já deduplicadas DENTRO do arquivo
-    /// (por `message.id:requestId`, mantendo a última — os chunks são idênticos). Cada linha traz a
-    /// quebra por tipo (com o split de escrita de cache 1h vs 5m, que têm preços diferentes) e o
-    /// custo estimado pelo `message.model`. Linhas sem timestamp/usage válidos são ignoradas;
-    /// linhas com total de tokens 0 não geram linha.
-    static func parseFile(_ url: URL, calendar: Calendar) -> [ParsedRow] {
-        guard let handle = try? FileHandle(forReadingFrom: url), let data = try? handle.readToEnd(), let text = String(data: data, encoding: .utf8) else {
-            return []
-        }
+    /// Lê um `.jsonl` (a partir do offset salvo, se o arquivo só cresceu) e devolve o estado com as
+    /// mensagens `assistant` já deduplicadas DENTRO do arquivo (por `message.id:requestId`, mantendo
+    /// a última — os chunks são idênticos). Cada linha traz a quebra por tipo (com o split de escrita
+    /// de cache 1h vs 5m, que têm preços diferentes) e o custo estimado pelo `message.model`. Linhas
+    /// sem timestamp/usage válidos são ignoradas; linhas com total de tokens 0 não geram linha.
+    static func scanFile(_ url: URL, signature: DailyTokenUsageCache.Signature, previous: FileHistoryState?, calendar: Calendar) -> FileHistoryState {
         func int(_ v: Any?) -> Int { max(0, (v as? NSNumber)?.intValue ?? 0) }
+        let head = JSONLScanner.head(of: url)
         var keyed: [String: ParsedRow] = [:]
         var unkeyed: [ParsedRow] = []
-        for line in text.split(separator: "\n") {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+        var offset: UInt64 = 0
+        if let previous, let previousKeyed = previous.keyed, UInt64(max(0, signature.size)) >= previous.offset, head.starts(with: previous.head) {
+            keyed = previousKeyed; unkeyed = previous.unkeyed; offset = previous.offset
+        }
+        let end = JSONLScanner.scan(url, from: offset) { line in
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                   object["type"] as? String == "assistant",
                   let timestamp = object["timestamp"] as? String,
                   let date = ClaudeUsageService.parseResetDate(timestamp),
                   let message = object["message"] as? [String: Any],
-                  let usage = message["usage"] as? [String: Any] else { continue }
+                  let usage = message["usage"] as? [String: Any] else { return }
             let cacheCreationTotal = int(usage["cache_creation_input_tokens"])
             // Escrita de cache dividida por TTL: 1h custa 2x input, 5m custa 1,25x. O que não vier
             // marcado como 1h é tratado como 5m (limitado ao total, defesa contra dado inconsistente).
@@ -101,7 +104,7 @@ public struct UsageHistoryService: Sendable {
                 cacheCreation5m: cacheCreationTotal - cacheCreation1h,
                 cacheCreation1h: cacheCreation1h,
                 messageCount: 1)
-            guard tokens.total != 0 else { continue }
+            guard tokens.total != 0 else { return }
             let cost = (message["model"] as? String).flatMap { ModelPricing.costUSD(model: $0, tokens: tokens) }
             let day = calendar.startOfDay(for: date)
             if let messageId = message["id"] as? String, let requestId = object["requestId"] as? String {
@@ -111,26 +114,36 @@ public struct UsageHistoryService: Sendable {
                 unkeyed.append(ParsedRow(key: nil, day: day, tokens: tokens, costUSD: cost))
             }
         }
-        return keyed.keys.sorted().compactMap { keyed[$0] } + unkeyed
+        let rows = Array(keyed.values) + unkeyed
+        let isCold = signature.modifiedAt.map { Date().timeIntervalSince($0) > TokenFileState.coldAfter } ?? false
+        return FileHistoryState(keyed: isCold ? nil : keyed, unkeyed: unkeyed, offset: end ?? 0, head: head, rows: rows)
     }
 }
 
-/// Cache thread-safe das linhas parseadas por arquivo `.jsonl`, chaveado por (mtime, tamanho) —
-/// mesmo padrão do `TokenUsageCache` de `ClaudeUsageService`. Como as sessões são majoritariamente
-/// append-only, um recálculo típico só relê os poucos arquivos que mudaram.
+/// Estado incremental de um `.jsonl` no histórico (ver `TokenFileState`).
+struct FileHistoryState: Sendable {
+    var keyed: [String: UsageHistoryService.ParsedRow]?
+    var unkeyed: [UsageHistoryService.ParsedRow]
+    var offset: UInt64
+    var head: Data
+    var rows: [UsageHistoryService.ParsedRow]
+}
+
+/// Cache thread-safe do estado por arquivo `.jsonl`, chaveado por (mtime, tamanho) — mesmo padrão
+/// do `TokenUsageCache` de `ClaudeUsageService`. Como as sessões são majoritariamente append-only,
+/// um recálculo típico só lê os bytes novos dos poucos arquivos que mudaram.
 final class DailyTokenUsageCache: @unchecked Sendable {
     struct Signature: Equatable { let modifiedAt: Date?; let size: Int }
     private let lock = NSLock()
-    private var entries: [String: (signature: Signature, rows: [UsageHistoryService.ParsedRow])] = [:]
+    private var entries: [String: (signature: Signature, state: FileHistoryState)] = [:]
 
-    func rows(for path: String, matching signature: Signature) -> [UsageHistoryService.ParsedRow]? {
+    func entry(for path: String) -> (signature: Signature, state: FileHistoryState)? {
         lock.lock(); defer { lock.unlock() }
-        guard let entry = entries[path], entry.signature == signature else { return nil }
-        return entry.rows
+        return entries[path]
     }
 
-    func store(_ rows: [UsageHistoryService.ParsedRow], for path: String, signature: Signature) {
+    func store(_ state: FileHistoryState, for path: String, signature: Signature) {
         lock.lock(); defer { lock.unlock() }
-        entries[path] = (signature, rows)
+        entries[path] = (signature, state)
     }
 }

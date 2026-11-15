@@ -64,7 +64,15 @@ enum ProfileStoreTests {
             ,("quota kind is stable across label change", testQuotaKindIsStableAcrossLabelChange)
             ,("usage fetch retries on 5xx and succeeds", testUsageRetriesOnServerError)
             ,("usage fetch does not retry on 401", testUsageDoesNotRetryUnauthorized)
+            ,("cursor light fetch makes one RPC and reuses models/daily of the same cycle", testCursorLightFetchReusesDetails)
+            ,("refresh planner: scheduled cycle skips the CLI and idle profiles", testRefreshPlannerScheduled)
+            ,("refresh planner: auth TTL, retry throttle, manual and on-demand scopes", testRefreshPlannerAuthAndScopes)
+            ,("refresh planner: cursor details only on their own interval", testRefreshPlannerCursorDetails)
             ,("token usage caches unmodified files", testTokenUsageCachesUnmodifiedFiles)
+            ,("token usage reads only appended bytes and dedups across the boundary", testTokenUsageIncrementalAppend)
+            ,("token usage waits for a half-written trailing line", testTokenUsagePartialTrailingLine)
+            ,("token usage rereads a rewritten file", testTokenUsageRereadsRewrittenFile)
+            ,("history incremental append matches a full parse", testHistoryIncrementalAppend)
             ,("daily usage buckets tokens by day and profile", testDailyUsageBucketsByDayAndProfile)
             ,("daily usage aggregates only the profiles it receives", testDailyUsageRespectsSelection)
             ,("daily usage skips invalid lines and empty files", testDailyUsageRobustness)
@@ -395,6 +403,30 @@ enum ProfileStoreTests {
         try check(snapshot.daily.isEmpty, "daily should be empty on daily failure")
         try check(snapshot.email == "user@example.com", "email from credentials")
         try check(snapshot.plan == "pro", "plan from credentials")
+    }
+
+    static func testCursorLightFetchReusesDetails() async throws {
+        let counter = CallCounter()
+        let service = CursorUsageService(
+            retry: UsageRetryPolicy(maxAttempts: 1, baseDelay: 0),
+            transport: { request in
+                _ = counter.increment()
+                let path = request.url?.lastPathComponent ?? ""
+                switch path {
+                case "GetCurrentPeriodUsage": return (periodUsageJSON(), cursorHTTPResponse(200, method: path))
+                case "GetAggregatedUsageEvents": return (aggregatedJSON(), cursorHTTPResponse(200, method: path))
+                default: return (dailyJSON(), cursorHTTPResponse(200, method: path))
+                }
+            },
+            credentialProvider: { fakeCursorCredentials })
+        let full = try await service.fetch()
+        try check(counter.count == 3 && !full.models.isEmpty && !full.daily.isEmpty, "full fetch should make 3 RPCs, got \(counter.count)")
+        let light = try await service.fetch(includeDetails: false, previous: full)
+        try check(counter.count == 4, "light fetch should add exactly 1 RPC, got \(counter.count - 3)")
+        try check(light.models == full.models && light.daily == full.daily, "light fetch must reuse models/daily")
+        // Sem `previous`, o modo leve não tem o que reaproveitar: busca os detalhes.
+        _ = try await service.fetch(includeDetails: false, previous: nil)
+        try check(counter.count == 7, "without a previous snapshot the details must still be fetched, got \(counter.count - 4)")
     }
 
     static func testCursorFetchDoesNotRetryUnauthorized() async throws {
@@ -1470,6 +1502,133 @@ enum ProfileStoreTests {
         try FileManager.default.setAttributes([.modificationDate: fixedMtime], ofItemAtPath: jsonl.path)
         let cached = service.tokenUsage(profileDirectory: profile)
         try check(cached == first, "cache did not reuse the unmodified file (mtime+size unchanged)")
+    }
+
+    private static func plannerProfile(health: ProfileHealth = .ready, hasUsage: Bool = true) -> Profile {
+        let usage = hasUsage ? ClaudeUsageSnapshot(quotas: [], source: "t") : nil
+        return Profile(name: "p", directory: URL(fileURLWithPath: "/tmp/p"), health: health, usage: usage)
+    }
+
+    static func testRefreshPlannerScheduled() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let recent = now.addingTimeInterval(-60)
+        // Perfil ativo, saudável, auth checado há 1 min: busca uso, NÃO sobe o CLI.
+        let active = RefreshPlanner.plan(profile: plannerProfile(), isActive: true, scope: .scheduled, now: now, lastUsageFetch: recent, lastAuthCheck: recent)
+        try check(active.fetchUsage && !active.checkAuth, "active profile: usage yes, CLI no — got \(active)")
+        // Inativo atualizado há 1 min: nada a fazer neste ciclo.
+        let idle = RefreshPlanner.plan(profile: plannerProfile(), isActive: false, scope: .scheduled, now: now, lastUsageFetch: recent, lastAuthCheck: recent)
+        try check(!idle.fetchUsage && !idle.checkAuth, "inactive fresh profile must be skipped — got \(idle)")
+        // Inativo com uso defasado (> 5 min): busca uso.
+        let stale = RefreshPlanner.plan(profile: plannerProfile(), isActive: false, scope: .scheduled, now: now, lastUsageFetch: now.addingTimeInterval(-301), lastAuthCheck: recent)
+        try check(stale.fetchUsage, "inactive profile past 5 min must refresh usage")
+        // Inativo sem uso conhecido: busca (popula a primeira exibição).
+        let blank = RefreshPlanner.plan(profile: plannerProfile(hasUsage: false), isActive: false, scope: .scheduled, now: now, lastUsageFetch: recent, lastAuthCheck: recent)
+        try check(blank.fetchUsage, "profile without usage must fetch")
+        // Primeiro ciclo do app (nada registrado): tudo é devido.
+        let first = RefreshPlanner.plan(profile: plannerProfile(), isActive: true, scope: .scheduled, now: now, lastUsageFetch: nil, lastAuthCheck: nil)
+        try check(first.fetchUsage && first.checkAuth, "first cycle must do everything")
+    }
+
+    static func testRefreshPlannerAuthAndScopes() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func plan(_ health: ProfileHealth = .ready, scope: RefreshScope = .scheduled, authAgo: TimeInterval, usageAgo: TimeInterval = 10, active: Bool = false) -> ProfileRefreshPlan {
+            RefreshPlanner.plan(profile: plannerProfile(health: health), isActive: active, scope: scope, now: now, lastUsageFetch: now.addingTimeInterval(-usageAgo), lastAuthCheck: now.addingTimeInterval(-authAgo))
+        }
+        try check(!plan(authAgo: 29 * 60).checkAuth, "healthy profile within 30 min must not spawn the CLI")
+        try check(plan(authAgo: 31 * 60).checkAuth, "healthy profile past 30 min must re-check")
+        try check(!plan(.expired, authAgo: 4 * 60).checkAuth, "expired profile within 5 min must not re-check")
+        try check(plan(.expired, authAgo: 6 * 60).checkAuth, "expired profile past 5 min must re-check")
+        try check(plan(authAgo: 60).authRetryAllowed == false && plan(authAgo: 6 * 60).authRetryAllowed, "token-failure retry is throttled to 5 min")
+        let manual = plan(scope: .manual, authAgo: 5, usageAgo: 5)
+        try check(manual.checkAuth && manual.fetchUsage, "manual refresh re-checks auth and usage")
+        let onDemand = plan(scope: .onDemand, authAgo: 5, usageAgo: 5)
+        try check(onDemand.fetchUsage && !onDemand.checkAuth, "opening a window refreshes usage of every profile but not the CLI")
+    }
+
+    static func testRefreshPlannerCursorDetails() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        try check(RefreshPlanner.shouldFetchCursorDetails(scope: .scheduled, now: now, lastFetch: nil), "no previous fetch → fetch details")
+        try check(!RefreshPlanner.shouldFetchCursorDetails(scope: .scheduled, now: now, lastFetch: now.addingTimeInterval(-9 * 60)), "within 10 min → skip details")
+        try check(RefreshPlanner.shouldFetchCursorDetails(scope: .scheduled, now: now, lastFetch: now.addingTimeInterval(-11 * 60)), "past 10 min → fetch details")
+        try check(RefreshPlanner.shouldFetchCursorDetails(scope: .onDemand, now: now, lastFetch: now.addingTimeInterval(-5)), "opening a window → fetch details")
+    }
+
+    private static func assistantLine(id: String, request: String, input: Int, output: Int, timestamp: String = "2026-11-10T12:00:00.000Z") -> String {
+        #"{"type":"assistant","timestamp":"\#(timestamp)","requestId":"\#(request)","message":{"id":"\#(id)","usage":{"input_tokens":\#(input),"output_tokens":\#(output)}}}"# + "\n"
+    }
+
+    private static func append(_ text: String, to url: URL) throws {
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd(); try handle.write(contentsOf: Data(text.utf8))
+    }
+
+    static func testTokenUsageIncrementalAppend() throws {
+        let profile = try temporaryRoot()
+        let dir = profile.appendingPathComponent("projects/proj"); try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let jsonl = dir.appendingPathComponent("s.jsonl")
+        // Linha irrelevante (tool-result) no meio: deve ser ignorada sem quebrar o offset.
+        try (assistantLine(id: "m1", request: "r1", input: 10, output: 1)
+             + #"{"type":"user","message":{"content":"x"}}"# + "\n").write(to: jsonl, atomically: true, encoding: .utf8)
+        let service = ClaudeUsageService()
+        let first = service.tokenUsage(profileDirectory: profile)
+        try check(first.input == 10 && first.messageCount == 1, "first read wrong: \(first)")
+
+        // Novo chunk da MESMA mensagem (o último vence) + uma mensagem nova.
+        try append(assistantLine(id: "m1", request: "r1", input: 10, output: 5) + assistantLine(id: "m2", request: "r2", input: 20, output: 2), to: jsonl)
+        let second = service.tokenUsage(profileDirectory: profile)
+        try check(second.input == 30 && second.output == 7 && second.messageCount == 2,
+                  "dedup across the saved offset failed: \(second)")
+
+        // Equivalente a ler o arquivo do zero com um serviço sem cache.
+        let fresh = ClaudeUsageService().tokenUsage(profileDirectory: profile)
+        try check(second == fresh, "incremental total differs from a full parse: \(second) vs \(fresh)")
+    }
+
+    static func testTokenUsagePartialTrailingLine() throws {
+        let profile = try temporaryRoot()
+        let dir = profile.appendingPathComponent("projects/proj"); try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let jsonl = dir.appendingPathComponent("s.jsonl")
+        let whole = assistantLine(id: "m2", request: "r2", input: 20, output: 2)
+        // Corte logo após um `}` interno: termina em `}` mas é um objeto incompleto.
+        let cut = whole.index(after: whole.range(of: #"}"#, options: .backwards, range: whole.startIndex..<whole.index(whole.endIndex, offsetBy: -3))!.lowerBound)
+        try (assistantLine(id: "m1", request: "r1", input: 10, output: 1) + String(whole[..<cut])).write(to: jsonl, atomically: true, encoding: .utf8)
+        let service = ClaudeUsageService()
+        let partial = service.tokenUsage(profileDirectory: profile)
+        try check(partial.input == 10 && partial.messageCount == 1, "half-written line must not be counted: \(partial)")
+        try append(String(whole[cut...]), to: jsonl)
+        let done = service.tokenUsage(profileDirectory: profile)
+        try check(done.input == 30 && done.messageCount == 2, "completed line must be counted exactly once: \(done)")
+    }
+
+    static func testTokenUsageRereadsRewrittenFile() throws {
+        let profile = try temporaryRoot()
+        let dir = profile.appendingPathComponent("projects/proj"); try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let jsonl = dir.appendingPathComponent("s.jsonl")
+        try assistantLine(id: "m1", request: "r1", input: 10, output: 1).write(to: jsonl, atomically: true, encoding: .utf8)
+        let service = ClaudeUsageService()
+        _ = service.tokenUsage(profileDirectory: profile)
+        // Reescrita (ex.: compactação) com conteúdo diferente e MAIOR: o offset antigo não vale.
+        try (assistantLine(id: "n1", request: "q1", input: 7, output: 1) + assistantLine(id: "n2", request: "q2", input: 8, output: 1)).write(to: jsonl, atomically: true, encoding: .utf8)
+        let after = service.tokenUsage(profileDirectory: profile)
+        try check(after.input == 15 && after.messageCount == 2, "rewritten file must be reparsed from the start: \(after)")
+    }
+
+    static func testHistoryIncrementalAppend() throws {
+        let root = try temporaryRoot()
+        let directory = root.appendingPathComponent("a/config")
+        let dir = directory.appendingPathComponent("projects/proj"); try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let jsonl = dir.appendingPathComponent("s.jsonl")
+        try assistantLine(id: "m1", request: "r1", input: 10, output: 1).write(to: jsonl, atomically: true, encoding: .utf8)
+        let profile = Profile(name: "a", directory: directory)
+        let service = UsageHistoryService()
+        let now = ISO8601DateFormatter().date(from: "2026-11-12T12:00:00Z")!
+        _ = service.dailyUsage(profiles: [profile], now: now)
+        try append(assistantLine(id: "m1", request: "r1", input: 10, output: 4) + assistantLine(id: "m2", request: "r2", input: 5, output: 1, timestamp: "2026-11-11T12:00:00.000Z"), to: jsonl)
+        let incremental = service.dailyUsage(profiles: [profile], now: now)
+        let fresh = UsageHistoryService().dailyUsage(profiles: [profile], now: now)
+        try check(incremental == fresh, "incremental history differs from a full parse")
+        try check(incremental.reduce(0) { (sum: Int, day: DailyTokenUsage) in sum + day.total } == 20, "expected deduplicated total 20, got \(incremental)")
     }
 
     // MARK: - Aggregate usage analysis (#34)
