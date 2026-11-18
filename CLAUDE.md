@@ -81,6 +81,10 @@ Caminho base: raiz do repositório.
   `CursorModelUsage`, `CursorModelFamily.classify`, `CursorDailySpend`, `CursorUsageSnapshot`.
 - `CursorAlert.swift` — `CursorBudgetAlertTracker` (1× por `billingCycleEnd`),
   `CursorBudgetAlertThreshold` (default 80), `CursorMonitoring` (toggle).
+  **`CursorMonitoring.featureVisible = false`**: a feature do Cursor está ESCONDIDA (menu,
+  Preferências, % na barra, fetch e alerta); o código fica, basta voltar para `true`.
+- `MCPServerStatus.swift` — `MCPListParser.parse` (puro): saída de `claude mcp list` →
+  `[MCPServerStatus]` (`connected|needsAuthentication|failed|pendingApproval`).
 - `UsageHistory.swift` — `TokenBreakdown` (tokens por tipo: input/output/cacheRead/cache 1h/5m),
   `DailyTokenUsage` (quebra + custo USD por perfil no dia; `perProfile`/`total` são computados do
   breakdown p/ compat), `PlanRecommendation` (+ `evaluate`) e `AnalysisSelection` (seleção de
@@ -118,6 +122,8 @@ Caminho base: raiz do repositório.
   para avisar antes de remover um perfil.
 - `ClaudeAuthService.swift` — chama `claude auth status`/login via CLI oficial, mapeia para
   `AuthStatus`.
+- `ClaudeMCPService.swift` — `list`/`login` via `claude mcp list|login <nome>` com o
+  `CLAUDE_CONFIG_DIR` do perfil (cwd = home). Base da ação "Autenticar MCPs ▸ conta" do menu.
 - `ClaudeLocator.swift` — localiza o binário `claude` real em `~/.local/share/claude/versions/...`.
 - `ClaudeUsageService.swift` — busca cotas de uso via endpoint OAuth
   `https://api.anthropic.com/api/oauth/usage`; parse de `five_hour`, `seven_day`,

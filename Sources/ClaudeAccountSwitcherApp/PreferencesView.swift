@@ -73,8 +73,10 @@ struct PreferencesView: View {
                 Picker(AppStrings.t("% na barra de menu:", "% in menu bar:"), selection: $statusBarSourceRaw) {
                     Text(AppStrings.t("Desligado", "Off")).tag(StatusBarUsageSource.off.rawValue)
                     Text(AppStrings.t("Só Claude (5h)", "Claude only (5h)")).tag(StatusBarUsageSource.claude.rawValue)
-                    Text(AppStrings.t("Só Cursor", "Cursor only")).tag(StatusBarUsageSource.cursor.rawValue)
-                    Text(AppStrings.t("Claude e Cursor", "Claude and Cursor")).tag(StatusBarUsageSource.both.rawValue)
+                    if CursorMonitoring.featureVisible {
+                        Text(AppStrings.t("Só Cursor", "Cursor only")).tag(StatusBarUsageSource.cursor.rawValue)
+                        Text(AppStrings.t("Claude e Cursor", "Claude and Cursor")).tag(StatusBarUsageSource.both.rawValue)
+                    }
                 }
                 .pickerStyle(.menu)
                 .help(AppStrings.t("Exibe o percentual usado ao lado do ícone, colorido por faixa (verde/laranja/vermelho).", "Shows the used percentage next to the icon, coloured by tier (green/orange/red)."))
@@ -90,15 +92,17 @@ struct PreferencesView: View {
                 .padding(.leading, 20)
                 .help(AppStrings.t("Desativado por padrão: matar o app no meio de uma gravação pode corromper a sessão dele. Sem isto, a troca avisa e pede para fechar manualmente.", "Off by default: killing the app mid-write can corrupt its session. Without this, the switch warns and asks you to close it manually."))
 
-                Divider()
-                Text(AppStrings.t("Cursor", "Cursor")).font(.title3.weight(.semibold))
-                Text(cursorStatus).font(.caption).foregroundStyle(.secondary)
-                Toggle(isOn: $cursorMonitoringEnabled) {
-                    Text(AppStrings.t("Monitorar uso do Cursor", "Monitor Cursor usage"))
-                }
-                .help(AppStrings.t("Consulta a API do Cursor a cada minuto (custo, limite, tokens por modelo).", "Queries the Cursor API every minute (cost, limit, tokens per model)."))
-                Stepper(value: $cursorBudgetThreshold, in: 1...100, step: 5) {
-                    Text(AppStrings.t("Alertar em \(Int(cursorBudgetThreshold))% do ciclo de faturamento do Cursor", "Alert at \(Int(cursorBudgetThreshold))% of the Cursor billing cycle"))
+                if CursorMonitoring.featureVisible {
+                    Divider()
+                    Text(AppStrings.t("Cursor", "Cursor")).font(.title3.weight(.semibold))
+                    Text(cursorStatus).font(.caption).foregroundStyle(.secondary)
+                    Toggle(isOn: $cursorMonitoringEnabled) {
+                        Text(AppStrings.t("Monitorar uso do Cursor", "Monitor Cursor usage"))
+                    }
+                    .help(AppStrings.t("Consulta a API do Cursor a cada minuto (custo, limite, tokens por modelo).", "Queries the Cursor API every minute (cost, limit, tokens per model)."))
+                    Stepper(value: $cursorBudgetThreshold, in: 1...100, step: 5) {
+                        Text(AppStrings.t("Alertar em \(Int(cursorBudgetThreshold))% do ciclo de faturamento do Cursor", "Alert at \(Int(cursorBudgetThreshold))% of the Cursor billing cycle"))
+                    }
                 }
 
                 if paseoDetected {

@@ -37,8 +37,12 @@ public enum CursorBudgetAlertThreshold {
 /// Preference key that enables/disables Cursor usage monitoring entirely.
 public enum CursorMonitoring {
     public static let defaultsKey = "cursorMonitoringEnabled"
+    /// Feature do Cursor escondida (menu, Preferências, % na barra, fetch e alerta). O código
+    /// fica; para reativar basta voltar para `true`.
+    public static let featureVisible = false
     /// Default on: if the key was never written, monitoring is enabled.
-    public static func isEnabled(_ defaults: UserDefaults = .standard) -> Bool {
+    public static func isEnabled(_ defaults: UserDefaults = .standard, featureVisible: Bool = featureVisible) -> Bool {
+        guard featureVisible else { return false }
         if defaults.object(forKey: defaultsKey) == nil { return true }
         return defaults.bool(forKey: defaultsKey)
     }

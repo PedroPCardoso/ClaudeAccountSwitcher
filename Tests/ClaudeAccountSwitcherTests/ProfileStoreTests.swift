@@ -15,6 +15,8 @@ enum ProfileStoreTests {
         unsetenv("CLAUDE_CONFIG_DIR")
         let tests: [(String, () async throws -> Void)] = [
             ("profile JSON round trip", testProfileRoundTrip),
+            ("mcp list parser maps every status marker", testMCPListParser),
+            ("cursor feature hidden disables monitoring regardless of preference", testCursorFeatureHidden),
             ("profile derives a sibling desktop directory from its config directory", testDesktopDirectory),
             ("store persists profiles and active profile", testStorePersists),
             ("store renames a profile without changing its identity", testRenameProfile),
@@ -532,6 +534,33 @@ enum ProfileStoreTests {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    static func testMCPListParser() throws {
+        let output = """
+        Checking MCP server health…
+
+        claude.ai Slack: https://mcp.slack.com/mcp - ! Needs authentication
+        claude.ai Gmail: https://gmailmcp.googleapis.com/mcp/v1 - ✔ Connected
+        whatsapp: http://127.0.0.1:47821/mcp (HTTP) - ✘ Failed to connect — ECONNREFUSED: Unable to connect.
+        local: npx -y some-pkg - ⏸ Pending approval
+        sentry: /usr/bin/npx -y @sentry/mcp-server --host=a-b - ✔ Connected
+        """
+        let servers = MCPListParser.parse(output)
+        try check(servers.count == 5, "expected 5 servers, got \(servers.count)")
+        try check(servers[0] == MCPServerStatus(name: "claude.ai Slack", target: "https://mcp.slack.com/mcp", state: .needsAuthentication), "slack needs auth: \(servers[0])")
+        try check(servers[1].state == .connected, "gmail connected")
+        try check(servers[2].name == "whatsapp" && servers[2].state == .failed, "whatsapp failed (colon inside message must not break name)")
+        try check(servers[3].state == .pendingApproval, "pending approval")
+        try check(servers[4].name == "sentry" && servers[4].state == .connected, "sentry connected")
+        try check(servers.filter(\.needsAuthentication).map(\.name) == ["claude.ai Slack"], "only slack needs auth")
+    }
+
+    static func testCursorFeatureHidden() throws {
+        let defaults = UserDefaults(suiteName: "cas-test-\(UUID().uuidString)")!
+        defaults.set(true, forKey: CursorMonitoring.defaultsKey)
+        try check(CursorMonitoring.isEnabled(defaults, featureVisible: false) == false, "hidden feature never monitors")
+        try check(CursorMonitoring.isEnabled(defaults, featureVisible: true) == true, "visible feature honours preference")
     }
 
     static func check(_ condition: Bool, _ message: String) throws {

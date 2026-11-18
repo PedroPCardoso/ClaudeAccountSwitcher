@@ -44,6 +44,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private let store: ProfileStore
     private let activation: ActivationService
     private let auth: ClaudeAuthService
+    private let mcp: ClaudeMCPService
     private let usage = ClaudeUsageService()
     private let cursorCredentials = CursorCredentialStore()
     private let cursorUsage: CursorUsageService
@@ -98,6 +99,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let locator = ClaudeLocator()
         self.locator = locator
         auth = ClaudeAuthService(locator: locator)
+        mcp = ClaudeMCPService(locator: locator)
         shell = ShellIntegrationManager(appSupport: root)
         migration = MigrationService(store: store)
         paseo = PaseoIntegration(appSupport: root)
@@ -252,6 +254,18 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             }
         }
         menu.addItem(.separator())
+        if !profiles.isEmpty {
+            // Ações rápidas por conta, sem abrir o terminal.
+            menu.addItem(profileSubmenuItem(
+                title: AppStrings.t("Refazer login", "Sign in again"),
+                toolTip: AppStrings.t("Abre o navegador para autenticar de novo a conta escolhida", "Opens the browser to re-authenticate the chosen account"),
+                profiles: profiles, action: #selector(reloginFromMenu(_:)), flagExpired: true))
+            menu.addItem(profileSubmenuItem(
+                title: AppStrings.t("Autenticar MCPs", "Authenticate MCPs"),
+                toolTip: AppStrings.t("Lista os servidores MCP da conta que pedem login e autentica pelo navegador", "Lists the account's MCP servers that need sign-in and authenticates them in the browser"),
+                profiles: profiles, action: #selector(authenticateMCPsFromMenu(_:)), flagExpired: false))
+            menu.addItem(.separator())
+        }
         let usageItem = NSMenuItem(title: AppStrings.t("Ver uso no Claude…", "View Claude usage…"), action: #selector(openUsage), keyEquivalent: "")
         usageItem.target = self
         usageItem.toolTip = AppStrings.t("Abre o painel visual com uso e tokens de todas as contas", "Opens the visual panel with usage and tokens for every account")
@@ -304,14 +318,16 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             button.title = ""
             statusItem.length = NSStatusItem.squareLength
         }
-        let source = AppPreferences.statusBarUsageSource
+        var source = AppPreferences.statusBarUsageSource
+        // Cursor escondido: quem tinha escolhido "Só Cursor"/"Claude e Cursor" passa a ver o Claude.
+        if !CursorMonitoring.featureVisible, source == .cursor || source == .both { source = .claude }
         let profiles = (try? store.list()) ?? []
         let activeID = try? store.active()?.id
         let activeUsage = profiles.first(where: { $0.id == activeID })?.usage
         let segments = StatusBarUsage.segments(
             source: source,
             activeClaude: activeUsage,
-            cursor: cursorSnapshot)
+            cursor: CursorMonitoring.featureVisible ? cursorSnapshot : nil)
         guard !segments.isEmpty else { showIconOnly(); return }
 
         let font = usageBadgeFont()
@@ -643,6 +659,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     private func cursorCredentialStatusText() -> String {
+        // Escondido: nem abre o state.vscdb do Cursor.
+        guard CursorMonitoring.featureVisible else { return "" }
         do {
             let creds = try cursorCredentials.credentials()
             let plan = creds.membershipType?.uppercased() ?? "?"
@@ -904,8 +922,100 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func profileSubmenuItem(title: String, toolTip: String, profiles: [Profile], action: Selector, flagExpired: Bool) -> NSMenuItem {
+        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        parent.toolTip = toolTip
+        let submenu = NSMenu()
+        for profile in profiles {
+            let needsLogin = flagExpired && profile.health == .expired
+            let item = NSMenuItem(title: (needsLogin ? "⚠️ " : "") + profile.name + "…", action: action, keyEquivalent: "")
+            item.target = self; item.representedObject = profile
+            if needsLogin { item.toolTip = AppStrings.t("Sessão expirada", "Session expired") }
+            submenu.addItem(item)
+        }
+        parent.submenu = submenu
+        return parent
+    }
+
+    @objc private func reloginFromMenu(_ sender: NSMenuItem) {
+        guard let profile = sender.representedObject as? Profile else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        reloginFromPreferences(profile)
+    }
+
+    @objc private func authenticateMCPsFromMenu(_ sender: NSMenuItem) {
+        guard let profile = sender.representedObject as? Profile else { return }
+        notify(AppStrings.t("Verificando MCPs de \(profile.name)…", "Checking \(profile.name)'s MCPs…"))
+        let mcp = self.mcp
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try mcp.list(profileDirectory: profile.directory) }
+            DispatchQueue.main.async { self?.presentMCPAuthentication(profile: profile, result: result) }
+        }
+    }
+
+    private func presentMCPAuthentication(profile: Profile, result: Result<[MCPServerStatus], Error>) {
+        NSApp.activate(ignoringOtherApps: true)
+        let servers: [MCPServerStatus]
+        switch result {
+        case .failure(let error): showError(error); return
+        case .success(let list): servers = list
+        }
+        let pending = servers.filter(\.needsAuthentication)
+        let alert = NSAlert()
+        alert.messageText = AppStrings.t("MCPs de \(profile.name)", "\(profile.name)'s MCPs")
+        guard !pending.isEmpty else {
+            let connected = servers.filter { $0.state == .connected }.count
+            let failed = servers.filter { $0.state == .failed }.map(\.name)
+            var text = AppStrings.t("Nenhum servidor MCP precisa de login. Conectados: \(connected) de \(servers.count).",
+                                    "No MCP server needs sign-in. Connected: \(connected) of \(servers.count).")
+            if !failed.isEmpty {
+                text += "\n" + AppStrings.t("Com falha de conexão (não é login): ", "Failing to connect (not a sign-in issue): ") + failed.joined(separator: ", ")
+            }
+            alert.informativeText = text
+            alert.runModal()
+            return
+        }
+        alert.informativeText = AppStrings.t(
+            "Estes servidores pedem autenticação nesta conta. O navegador abrirá uma vez para cada um; conectores claude.ai ficam disponíveis na próxima sessão do Claude Code.",
+            "These servers need authentication on this account. The browser opens once per server; claude.ai connectors become available in the next Claude Code session.")
+        let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4
+        let boxes = pending.map { server -> NSButton in
+            let box = NSButton(checkboxWithTitle: server.name, target: nil, action: nil)
+            box.state = .on; box.toolTip = server.target
+            stack.addArrangedSubview(box)
+            return box
+        }
+        stack.frame = NSRect(x: 0, y: 0, width: 320, height: CGFloat(pending.count) * 22)
+        alert.accessoryView = stack
+        alert.addButton(withTitle: AppStrings.t("Autenticar", "Authenticate"))
+        alert.addButton(withTitle: AppStrings.t("Cancelar", "Cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let chosen = zip(pending, boxes).filter { $0.1.state == .on }.map(\.0.name)
+        guard !chosen.isEmpty else { return }
+        let mcp = self.mcp
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            // Sequencial: cada login abre o navegador e (para HTTP/SSE) espera o callback OAuth.
+            var failures: [String] = []
+            for name in chosen {
+                do { try mcp.login(profileDirectory: profile.directory, serverName: name) }
+                catch { failures.append(name) }
+            }
+            let ok = chosen.count - failures.count
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if failures.isEmpty {
+                    self.notify(AppStrings.t("MCPs de \(profile.name): \(ok) autenticado(s)", "\(profile.name)'s MCPs: \(ok) authenticated"))
+                } else {
+                    self.showError(NSError(domain: "Claude Account Switcher", code: 8, userInfo: [NSLocalizedDescriptionKey: AppStrings.t(
+                        "Falhou ao autenticar em \(profile.name): \(failures.joined(separator: ", ")). Os demais (\(ok)) concluíram.",
+                        "Failed to authenticate on \(profile.name): \(failures.joined(separator: ", ")). The others (\(ok)) completed.")]))
+                }
+            }
+        }
+    }
+
     private func reloginFromPreferences(_ profile: Profile) {
-        let alert = NSAlert(); alert.messageText = "Refazer login"; alert.informativeText = "O navegador será aberto para autenticar novamente a conta \(profile.email ?? profile.name). O nome e o perfil ativo não serão alterados."; alert.addButton(withTitle: "Continuar"); alert.addButton(withTitle: "Cancelar")
+        let alert = NSAlert(); alert.messageText = AppStrings.t("Refazer login", "Sign in again"); alert.informativeText = AppStrings.t("O navegador será aberto para autenticar novamente a conta \(profile.email ?? profile.name). O nome e o perfil ativo não serão alterados.", "The browser will open to re-authenticate \(profile.email ?? profile.name). The name and the active profile stay the same."); alert.addButton(withTitle: AppStrings.t("Continuar", "Continue")); alert.addButton(withTitle: AppStrings.t("Cancelar", "Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         notify(AppStrings.t("Aguardando login de \(profile.name)…", "Waiting for \(profile.name) to sign in…"))
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
