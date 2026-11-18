@@ -1,12 +1,18 @@
-# Claude Account Switcher 1.3.8
+# Claude Account Switcher 1.3.9
 
 <img src="docs/assets/claude-account-switcher-logo.png" alt="Claude Account Switcher logo" width="180">
 
 Native macOS menu bar app for switching between isolated Claude Code profiles. The selected profile applies to new sessions; already-open sessions remain unchanged.
 
-Current release: **1.3.8**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
+Current release: **1.3.9**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
 
-Direct download: [Claude-Account-Switcher-1.3.8.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/releases/download/v1.3.8/Claude-Account-Switcher-1.3.8.dmg)
+Direct download: [Claude-Account-Switcher-1.3.9.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/releases/download/v1.3.9/Claude-Account-Switcher-1.3.9.dmg)
+
+### What's new in 1.3.9
+
+- **Authenticate MCPs actually signs in.** The CLI refuses `claude mcp login` for HTTP/SSE servers without a terminal, so the menu action now runs it under a pseudo-TTY (`/usr/bin/script`) — the browser opens and the CLI waits for the OAuth callback, still without a Terminal window.
+- **Renew tokens of servers that keep expiring.** The list now shows every remote (HTTP/SSE) server of the account: the ones needing sign-in come pre-checked, connected ones can be checked to force a new sign-in. Local stdio servers and connected claude.ai connectors are left out.
+- **Visible progress.** A progress window appears while `claude mcp list` health-checks the servers (it can take ~40 s) and while waiting for the browser sign-in; the result window shows what succeeded and why anything failed.
 
 ### What's new in 1.3.8
 
