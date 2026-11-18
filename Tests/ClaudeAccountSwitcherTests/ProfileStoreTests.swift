@@ -16,6 +16,8 @@ enum ProfileStoreTests {
         let tests: [(String, () async throws -> Void)] = [
             ("profile JSON round trip", testProfileRoundTrip),
             ("mcp list parser maps every status marker", testMCPListParser),
+            ("mcp login error keeps the last readable line and drops ANSI and URLs", testMCPLoginErrorLine),
+            ("mcp auth candidates include renewable remote servers, not stdio nor connected claude.ai", testMCPAuthCandidates),
             ("cursor feature hidden disables monitoring regardless of preference", testCursorFeatureHidden),
             ("profile derives a sibling desktop directory from its config directory", testDesktopDirectory),
             ("store persists profiles and active profile", testStorePersists),
@@ -554,6 +556,28 @@ enum ProfileStoreTests {
         try check(servers[3].state == .pendingApproval, "pending approval")
         try check(servers[4].name == "sentry" && servers[4].state == .connected, "sentry connected")
         try check(servers.filter(\.needsAuthentication).map(\.name) == ["claude.ai Slack"], "only slack needs auth")
+    }
+
+    static func testMCPAuthCandidates() throws {
+        let servers = MCPListParser.parse("""
+        claude.ai Slack: https://mcp.slack.com/mcp - ! Needs authentication
+        claude.ai Gmail: https://gmailmcp.googleapis.com/mcp/v1 - ✔ Connected
+        plugin:datadog:mcp: https://mcp.datadoghq.com/v1/mcp?toolsets= (HTTP) - ✔ Connected
+        agz-contabil: https://portal.example.com/api/v1/mcp/contabil (HTTP) - ✔ Connected
+        whatsapp: http://127.0.0.1:47821/mcp (HTTP) - ✘ Failed to connect — ECONNREFUSED
+        playwright: npx -y @playwright/mcp@latest - ✔ Connected
+        local: https://x.example.com/mcp (HTTP) - ⏸ Pending approval
+        """)
+        let candidates = MCPAuthCandidates.select(servers)
+        try check(candidates.map(\.server.name) == ["claude.ai Slack", "plugin:datadog:mcp", "agz-contabil", "whatsapp"], "candidates: \(candidates.map(\.server.name))")
+        try check(candidates.map(\.preselected) == [true, false, false, false], "only pending preselected")
+    }
+
+    static func testMCPLoginErrorLine() throws {
+        let raw = "\u{1B}[2KStarting authentication…\r\n  \u{1B}]8;;https://auth.example.com/x?state=SECRET\u{07}https://auth.example.com/x?state=SECRET\u{1B}]8;;\u{07}\r\n\u{1B}[31mCouldn't complete authentication\u{1B}[0m\r\n"
+        let line = ClaudeMCPService.lastMeaningfulLine(raw)
+        try check(line == "Couldn't complete authentication", "got: \(line)")
+        try check(!line.contains("SECRET"), "never leaks the OAuth URL")
     }
 
     static func testCursorFeatureHidden() throws {

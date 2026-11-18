@@ -945,12 +945,35 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     @objc private func authenticateMCPsFromMenu(_ sender: NSMenuItem) {
         guard let profile = sender.representedObject as? Profile else { return }
-        notify(AppStrings.t("Verificando MCPs de \(profile.name)…", "Checking \(profile.name)'s MCPs…"))
+        // `claude mcp list` faz health check de cada servidor (~40 s com muitos conectores):
+        // sem um aviso visível parece que o clique não fez nada.
+        let progress = showProgressPanel(AppStrings.t(
+            "Verificando os MCPs de \(profile.name)…\nIsso pode levar até um minuto.",
+            "Checking \(profile.name)'s MCPs…\nThis can take up to a minute."))
         let mcp = self.mcp
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try mcp.list(profileDirectory: profile.directory) }
-            DispatchQueue.main.async { self?.presentMCPAuthentication(profile: profile, result: result) }
+            DispatchQueue.main.async {
+                progress.close()
+                self?.presentMCPAuthentication(profile: profile, result: result)
+            }
         }
+    }
+
+    private func showProgressPanel(_ message: String) -> NSPanel {
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 90), styleMask: [.titled], backing: .buffered, defer: false)
+        panel.title = "Claude Account Switcher"
+        panel.isReleasedWhenClosed = false
+        panel.level = .floating
+        let spinner = NSProgressIndicator(); spinner.style = .spinning; spinner.controlSize = .regular; spinner.startAnimation(nil)
+        let label = NSTextField(wrappingLabelWithString: message)
+        let stack = NSStackView(views: [spinner, label]); stack.orientation = .horizontal; stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        panel.contentView = stack
+        panel.center()
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        return panel
     }
 
     private func presentMCPAuthentication(profile: Profile, result: Result<[MCPServerStatus], Error>) {
@@ -960,56 +983,79 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         case .failure(let error): showError(error); return
         case .success(let list): servers = list
         }
-        let pending = servers.filter(\.needsAuthentication)
+        let candidates = MCPAuthCandidates.select(servers)
         let alert = NSAlert()
         alert.messageText = AppStrings.t("MCPs de \(profile.name)", "\(profile.name)'s MCPs")
-        guard !pending.isEmpty else {
-            let connected = servers.filter { $0.state == .connected }.count
-            let failed = servers.filter { $0.state == .failed }.map(\.name)
-            var text = AppStrings.t("Nenhum servidor MCP precisa de login. Conectados: \(connected) de \(servers.count).",
-                                    "No MCP server needs sign-in. Connected: \(connected) of \(servers.count).")
-            if !failed.isEmpty {
-                text += "\n" + AppStrings.t("Com falha de conexão (não é login): ", "Failing to connect (not a sign-in issue): ") + failed.joined(separator: ", ")
-            }
-            alert.informativeText = text
+        guard !candidates.isEmpty else {
+            alert.informativeText = AppStrings.t(
+                "Esta conta não tem servidores MCP remotos (HTTP/SSE) que usem login. Servidores locais (npx, comandos) não precisam de autenticação.",
+                "This account has no remote (HTTP/SSE) MCP servers that use sign-in. Local servers (npx, commands) need no authentication.")
             alert.runModal()
             return
         }
-        alert.informativeText = AppStrings.t(
-            "Estes servidores pedem autenticação nesta conta. O navegador abrirá uma vez para cada um; conectores claude.ai ficam disponíveis na próxima sessão do Claude Code.",
-            "These servers need authentication on this account. The browser opens once per server; claude.ai connectors become available in the next Claude Code session.")
+        let pendingCount = candidates.filter(\.preselected).count
+        alert.informativeText = (pendingCount > 0
+            ? AppStrings.t("\(pendingCount) servidor(es) pedem login (já marcados). ", "\(pendingCount) server(s) need sign-in (pre-checked). ")
+            : AppStrings.t("Nenhum servidor pede login agora. ", "No server needs sign-in right now. "))
+            + AppStrings.t(
+                "Marque também os que vivem pedindo reautenticação para renovar o token. O navegador abre uma vez por servidor.",
+                "Also check the ones that keep asking to re-authenticate to renew their token. The browser opens once per server.")
         let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4
-        let boxes = pending.map { server -> NSButton in
-            let box = NSButton(checkboxWithTitle: server.name, target: nil, action: nil)
-            box.state = .on; box.toolTip = server.target
+        let boxes = candidates.map { candidate -> NSButton in
+            let server = candidate.server
+            let suffix: String
+            switch server.state {
+            case .needsAuthentication: suffix = AppStrings.t(" — pede login", " — needs sign-in")
+            case .connected: suffix = AppStrings.t(" — conectado", " — connected")
+            case .failed: suffix = AppStrings.t(" — falha de conexão", " — connection failed")
+            default: suffix = ""
+            }
+            let box = NSButton(checkboxWithTitle: server.name + suffix, target: nil, action: nil)
+            box.state = candidate.preselected ? .on : .off; box.toolTip = server.target
             stack.addArrangedSubview(box)
             return box
         }
-        stack.frame = NSRect(x: 0, y: 0, width: 320, height: CGFloat(pending.count) * 22)
-        alert.accessoryView = stack
+        let rowHeight: CGFloat = 22
+        let contentHeight = CGFloat(candidates.count) * rowHeight
+        stack.frame = NSRect(x: 0, y: 0, width: 380, height: contentHeight)
+        if candidates.count > 12 {
+            let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 12 * rowHeight))
+            scroll.hasVerticalScroller = true; scroll.documentView = stack
+            alert.accessoryView = scroll
+        } else {
+            alert.accessoryView = stack
+        }
         alert.addButton(withTitle: AppStrings.t("Autenticar", "Authenticate"))
         alert.addButton(withTitle: AppStrings.t("Cancelar", "Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let chosen = zip(pending, boxes).filter { $0.1.state == .on }.map(\.0.name)
+        let chosen = zip(candidates, boxes).filter { $0.1.state == .on }.map(\.0.server.name)
         guard !chosen.isEmpty else { return }
         let mcp = self.mcp
+        let progress = showProgressPanel(AppStrings.t(
+            "Autenticando \(chosen.count) MCP(s) de \(profile.name)…\nConclua o login no navegador.",
+            "Authenticating \(chosen.count) MCP(s) for \(profile.name)…\nFinish signing in in the browser."))
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             // Sequencial: cada login abre o navegador e (para HTTP/SSE) espera o callback OAuth.
             var failures: [String] = []
             for name in chosen {
                 do { try mcp.login(profileDirectory: profile.directory, serverName: name) }
-                catch { failures.append(name) }
+                catch ClaudeMCPError.loginFailed(_, let message) { failures.append("\(name) (\(message))") }
+                catch { failures.append("\(name) (\(error.localizedDescription))") }
             }
             let ok = chosen.count - failures.count
             DispatchQueue.main.async {
+                progress.close()
                 guard let self else { return }
-                if failures.isEmpty {
-                    self.notify(AppStrings.t("MCPs de \(profile.name): \(ok) autenticado(s)", "\(profile.name)'s MCPs: \(ok) authenticated"))
-                } else {
-                    self.showError(NSError(domain: "Claude Account Switcher", code: 8, userInfo: [NSLocalizedDescriptionKey: AppStrings.t(
-                        "Falhou ao autenticar em \(profile.name): \(failures.joined(separator: ", ")). Os demais (\(ok)) concluíram.",
-                        "Failed to authenticate on \(profile.name): \(failures.joined(separator: ", ")). The others (\(ok)) completed.")]))
-                }
+                NSApp.activate(ignoringOtherApps: true)
+                let done = NSAlert()
+                done.messageText = AppStrings.t("MCPs de \(profile.name)", "\(profile.name)'s MCPs")
+                done.informativeText = failures.isEmpty
+                    ? AppStrings.t("\(ok) autenticado(s). Sessões do Claude Code já abertas precisam ser reiniciadas para usar o token novo.",
+                                   "\(ok) authenticated. Already-open Claude Code sessions must be restarted to use the new token.")
+                    : AppStrings.t("Falhou: \(failures.joined(separator: ", ")). Concluídos: \(ok).",
+                                   "Failed: \(failures.joined(separator: ", ")). Completed: \(ok).")
+                if !failures.isEmpty { done.alertStyle = .warning }
+                done.runModal()
             }
         }
     }
