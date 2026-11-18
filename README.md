@@ -1,12 +1,20 @@
-# Claude Account Switcher 1.3.7
+# Claude Account Switcher 1.3.8
 
 <img src="docs/assets/claude-account-switcher-logo.png" alt="Claude Account Switcher logo" width="180">
 
 Native macOS menu bar app for switching between isolated Claude Code profiles. The selected profile applies to new sessions; already-open sessions remain unchanged.
 
-Current release: **1.3.7**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
+Current release: **1.3.8**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
 
-Direct download: [Claude-Account-Switcher-1.3.7.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/releases/download/v1.3.7/Claude-Account-Switcher-1.3.7.dmg)
+Direct download: [Claude-Account-Switcher-1.3.8.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/releases/download/v1.3.8/Claude-Account-Switcher-1.3.8.dmg)
+
+### What's new in 1.3.8
+
+- **Sign in again from the menu bar.** New **Sign in again ▸ <account>** submenu re-authenticates any account in the browser without opening a terminal; accounts with an expired session are flagged with ⚠️.
+- **Authenticate MCPs per account.** New **Authenticate MCPs ▸ <account>** runs `claude mcp list` with that account's config, shows the servers that need sign-in (pre-checked) and runs `claude mcp login <name>` for each — OAuth tokens stay isolated per account. claude.ai connectors become available on the next Claude Code session.
+- **Cursor monitoring hidden.** The Cursor menu section, preferences, badge options, fetch and budget alert are hidden (code kept behind `CursorMonitoring.featureVisible`). A badge previously set to Cursor/both now shows Claude.
+- **Safer profile switching and isolation.** `claude --resume` follows the profile that owns the conversation; the launcher keeps the profile of the session that spawned it; removing a profile also deletes its desktop session; maintenance only deletes Keychain credentials of orphaned managed directories; uninstall reverts launchd and Paseo changes; migration copies the native app session into the `~/.claude` profile.
+- **Lighter refresh cycle.** Incremental session-log scanning and TTL'd `claude auth status` checks cut CPU and memory use; the menu shows only profile nicknames.
 
 ### What's new in 1.3.7
 
