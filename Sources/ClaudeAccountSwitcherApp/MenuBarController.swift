@@ -185,7 +185,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
         if let official = try? locator.locate() { try? shell.install(home: FileManager.default.homeDirectoryForCurrentUser, officialBinary: official, casBinary: MenuBarController.bundledCASBinary()) }
         if let active = try? store.active() { try? SystemLaunchdEnvironment().set(active.directory.path); try? paseo.updateSymlink(to: active.directory) }
-        try? loginItem.setEnabled(true)
+        if LoginItemService.canRegister(bundleURL: Bundle.main.bundleURL) { try? loginItem.setEnabled(true) }
     }
 
     private func scheduleRefreshTimer() {

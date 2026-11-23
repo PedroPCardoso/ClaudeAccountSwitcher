@@ -16,6 +16,7 @@ enum ProfileStoreTests {
         let tests: [(String, () async throws -> Void)] = [
             ("profile JSON round trip", testProfileRoundTrip),
             ("mcp list parser maps every status marker", testMCPListParser),
+            ("login item is only registered from a packaged .app outside .build", testLoginItemCanRegister),
             ("mcp login error keeps the last readable line and drops ANSI and URLs", testMCPLoginErrorLine),
             ("mcp auth candidates include renewable remote servers, not stdio nor connected claude.ai", testMCPAuthCandidates),
             ("cursor feature hidden disables monitoring regardless of preference", testCursorFeatureHidden),
@@ -578,6 +579,12 @@ enum ProfileStoreTests {
         let line = ClaudeMCPService.lastMeaningfulLine(raw)
         try check(line == "Couldn't complete authentication", "got: \(line)")
         try check(!line.contains("SECRET"), "never leaks the OAuth URL")
+    }
+
+    static func testLoginItemCanRegister() throws {
+        try check(LoginItemService.canRegister(bundleURL: URL(fileURLWithPath: "/Users/x/Applications/Claude Account Switcher.app")), "installed app registers")
+        try check(!LoginItemService.canRegister(bundleURL: URL(fileURLWithPath: "/Users/x/Develop/CAS/.build/arm64-apple-macosx/debug")), "bare swift run binary never registers")
+        try check(!LoginItemService.canRegister(bundleURL: URL(fileURLWithPath: "/Users/x/Develop/CAS/.build/release/Foo.app")), "app inside .build never registers")
     }
 
     static func testCursorFeatureHidden() throws {
