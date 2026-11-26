@@ -132,6 +132,9 @@ enum ProfileStoreTests {
             ,("launcher keeps the inherited CLAUDE_CONFIG_DIR of a session it launched itself", testLauncherKeepsInheritedDirOfLaunchedSession)
             ,("paseo revert removes only the launcher command and symlink env, with backup", testPaseoRevertRemovesOnlyOurFields)
             ,("paseo integrate points the claude provider command at the launcher", testPaseoIntegrateSetsCommandToLauncher)
+            ,("session archive parses file locations, message lines and search queries", testSessionArchiveModel)
+            ,("session archive copies incrementally, keeps rewrites and deletions, searches and restores byte for byte", testSessionArchiveSyncSearchRestore)
+            ,("cas parses sync/search/restore/db", testCASArchiveCommands)
         ]
         var failures = 0
         for (name, test) in tests {
@@ -592,6 +595,128 @@ enum ProfileStoreTests {
         defaults.set(true, forKey: CursorMonitoring.defaultsKey)
         try check(CursorMonitoring.isEnabled(defaults, featureVisible: false) == false, "hidden feature never monitors")
         try check(CursorMonitoring.isEnabled(defaults, featureVisible: true) == true, "visible feature honours preference")
+    }
+
+    static func testSessionArchiveModel() throws {
+        let main = SessionFileLocation.parse(relativePath: "projects/-Users-me-app/abc-123.jsonl")
+        try check(main == SessionFileLocation(relativePath: "projects/-Users-me-app/abc-123.jsonl", projectSlug: "-Users-me-app", sessionID: "abc-123", parentSessionID: nil), "main session location")
+        let sub = SessionFileLocation.parse(relativePath: "projects/-Users-me-app/abc-123/subagents/agent-x.jsonl")
+        try check(sub?.sessionID == "agent-x" && sub?.parentSessionID == "abc-123" && sub?.resumeID == "abc-123", "subagent location resumes the parent")
+        try check(SessionFileLocation.parse(relativePath: "projects/x.jsonl") == nil, "file directly under projects is ignored")
+        try check(SessionFileLocation.parse(relativePath: "todos/a/b.jsonl") == nil, "files outside projects are ignored")
+        try check(SessionFileLocation.parse(relativePath: "projects/a/b.json") == nil, "non-jsonl ignored")
+
+        let user = SessionLineParser.parse(Data(#"{"type":"user","uuid":"u1","timestamp":"2026-11-01T10:00:00Z","cwd":"/tmp/p","message":{"role":"user","content":"  como faço deploy?  "}}"#.utf8))
+        try check(user?.type == "user" && user?.text == "como faço deploy?" && user?.cwd == "/tmp/p", "user string content")
+        let assistant = SessionLineParser.parse(Data(#"{"type":"assistant","requestId":"r1","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"thinking","thinking":"segredo"},{"type":"text","text":"Use o script"},{"type":"tool_use","name":"Bash","input":{}}],"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":40}}}"#.utf8))
+        try check(assistant?.text == "Use o script", "only text blocks are indexed (no thinking/tool_use)")
+        try check(assistant?.model == "claude-opus-5-5" && assistant?.messageID == "m1" && assistant?.requestID == "r1", "assistant ids")
+        try check(assistant?.inputTokens == 10 && assistant?.outputTokens == 20 && assistant?.cacheReadTokens == 30 && assistant?.cacheCreationTokens == 40, "token usage")
+        let meta = SessionLineParser.parse(Data(#"{"type":"user","isMeta":true,"message":{"content":"<caveat>"}}"#.utf8))
+        try check(meta?.text == "", "meta lines keep metadata but no text")
+        let toolResult = SessionLineParser.parse(Data(#"{"type":"user","message":{"content":[{"type":"tool_result","content":"huge output"}]}}"#.utf8))
+        try check(toolResult?.text == "", "tool results are not indexed")
+        try check(SessionLineParser.parse(Data(#"{"type":"attachment"}"#.utf8)) == nil, "non-message lines are skipped")
+        try check(SessionLineParser.parse(Data("not json".utf8)) == nil, "invalid json is skipped")
+
+        try check(SessionSearchQuery.ftsExpression("  deploy  prod-1 ") == #""deploy" "prod-1""#, "each word becomes a quoted term")
+        try check(SessionSearchQuery.ftsExpression(#"say "hi""#) == #""say" """hi""""#, "quotes are escaped")
+        try check(SessionSearchQuery.ftsExpression("   ") == nil, "blank query")
+    }
+
+    static func testSessionArchiveSyncSearchRestore() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let profileDir = root.appendingPathComponent("Profiles/P1/config", isDirectory: true)
+        let project = profileDir.appendingPathComponent("projects/-tmp-app", isDirectory: true)
+        let subagents = project.appendingPathComponent("sess-1/subagents", isDirectory: true)
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        let profile = Profile(name: "Work", email: "w@x.com", directory: profileDir)
+        let mainFile = project.appendingPathComponent("sess-1.jsonl")
+        let subFile = subagents.appendingPathComponent("agent-a.jsonl")
+        let bigBlob = String(repeating: "lorem ipsum dolor ", count: 200)
+        let lines = [
+            #"{"type":"user","uuid":"u1","timestamp":"2026-11-01T10:00:00Z","cwd":"/tmp/app","sessionId":"sess-1","message":{"role":"user","content":"Configurar o pipeline kubernetes"}}"#,
+            #"{"type":"attachment","blob":"\#(bigBlob)"}"#,
+            #"{"type":"assistant","uuid":"a1","timestamp":"2026-11-01T10:00:05Z","cwd":"/tmp/app","requestId":"r1","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"text","text":"Vamos usar helm"}],"usage":{"input_tokens":5,"output_tokens":7}}}"#,
+        ]
+        let original = lines.joined(separator: "\n") + "\n"
+        try original.write(to: mainFile, atomically: true, encoding: .utf8)
+        let subContents = #"{"type":"assistant","uuid":"s1","message":{"content":[{"type":"text","text":"subagente analisou terraform"}]}}"# + "\n"
+        try subContents.write(to: subFile, atomically: true, encoding: .utf8)
+        try "ignore".write(to: project.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+
+        let archive = SessionArchive(appSupport: root)
+        var report = try archive.sync(profiles: [profile])
+        try check(report.errors.isEmpty, "first sync errors: \(report.errors)")
+        try check(report.filesSeen == 2 && report.filesUpdated == 2 && report.linesAdded == 4, "first sync copies every line: \(report)")
+
+        report = try archive.sync(profiles: [profile])
+        try check(report.filesUpdated == 0 && report.linesAdded == 0, "unchanged files are skipped: \(report)")
+
+        // Append: uma linha completa e uma escrita em andamento (sem \n, JSON incompleto).
+        let appended = #"{"type":"user","uuid":"u2","timestamp":"2026-11-01T10:01:00Z","message":{"content":"agora o rollback"}}"# + "\n"
+        let handle = try FileHandle(forWritingTo: mainFile)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((appended + #"{"type":"user","mess"#).utf8))
+        try handle.close()
+        report = try archive.sync(profiles: [profile])
+        try check(report.linesAdded == 1 && report.revisionsCreated == 0, "append reads only the new complete line: \(report)")
+
+        let hits = try archive.search("kubernetes")
+        try check(hits.count == 1 && hits[0].resumeID == "sess-1" && hits[0].profileName == "Work" && hits[0].cwd == "/tmp/app", "search finds the user message: \(hits)")
+        try check(hits[0].snippet.contains("[kubernetes]"), "snippet highlights the match: \(hits[0].snippet)")
+        let subHits = try archive.search("terraform")
+        try check(subHits.first?.resumeID == "sess-1", "subagent hits resume the parent session")
+        try check(try archive.search("thinking-nao-indexado").isEmpty, "unknown words find nothing")
+
+        // Restore num perfil vazio: bytes idênticos (sem a linha incompleta) + subagente.
+        let restoreDir = root.appendingPathComponent("Restore", isDirectory: true)
+        let candidates = try archive.candidates(sessionPrefix: "sess")
+        try check(candidates == [SessionArchive.SessionCandidate(sessionID: "sess-1", profileID: profile.id.uuidString)], "prefix lookup: \(candidates)")
+        var result = try archive.restore(sessionID: "sess-1", fromProfileID: profile.id.uuidString, into: restoreDir)
+        try check(result.written.count == 2 && result.alreadyPresent.isEmpty && result.cwd == "/tmp/app", "restore result: \(result)")
+        let restoredMain = try String(contentsOf: restoreDir.appendingPathComponent("projects/-tmp-app/sess-1.jsonl"), encoding: .utf8)
+        try check(restoredMain == original + appended, "restored main session is byte for byte (compressed line included)")
+        let restoredSub = try String(contentsOf: restoreDir.appendingPathComponent("projects/-tmp-app/sess-1/subagents/agent-a.jsonl"), encoding: .utf8)
+        try check(restoredSub == subContents, "restored subagent transcript")
+        result = try archive.restore(sessionID: "sess-1", fromProfileID: profile.id.uuidString, into: restoreDir)
+        try check(result.written.isEmpty && result.alreadyPresent.count == 2, "restore never overwrites existing files")
+
+        // Reescrita (início diferente) vira nova revisão; o conteúdo antigo continua no banco.
+        // A última linha é JSON completo SEM `\n` e com espaços finais: o restore tem que devolvê-la igual.
+        let rewritten = #"{"type":"user","uuid":"n1","message":{"content":"conversa compactada"}}"# + "\n" + #"{"type":"system"}"# + "  "
+        try rewritten.write(to: mainFile, atomically: true, encoding: .utf8)
+        report = try archive.sync(profiles: [profile])
+        try check(report.revisionsCreated == 1 && report.linesAdded == 2, "rewrite creates a revision: \(report)")
+        try check(try archive.search("kubernetes").count == 1, "old revision stays searchable")
+        let latestDir = root.appendingPathComponent("Latest", isDirectory: true)
+        _ = try archive.restore(sessionID: "sess-1", fromProfileID: profile.id.uuidString, into: latestDir)
+        let latest = try String(contentsOf: latestDir.appendingPathComponent("projects/-tmp-app/sess-1.jsonl"), encoding: .utf8)
+        try check(latest == rewritten, "restore uses the latest revision")
+
+        // Apagado do disco (limpeza de 30 dias do CLI): marcado, nunca removido do banco.
+        try FileManager.default.removeItem(at: mainFile)
+        report = try archive.sync(profiles: [profile])
+        try check(report.filesMarkedDeleted == 1, "deleted file is marked: \(report)")
+        let afterDelete = try archive.search("compactada")
+        try check(afterDelete.count == 1 && afterDelete[0].deleted, "deleted sessions stay searchable and flagged")
+        try check(try archive.sync(profiles: [profile]).filesMarkedDeleted == 0, "deletion is marked only once")
+    }
+
+    static func testCASArchiveCommands() throws {
+        try check(CASParser.parse(["sync"]) == .sync, "sync")
+        try check(CASParser.parse(["sync", "x"]) == .help(exitCode: 1), "sync takes no args")
+        try check(CASParser.parse(["search", "deploy", "prod"]) == .search("deploy prod", limit: 20), "search joins words")
+        try check(CASParser.parse(["search", "--limit", "5", "deploy"]) == .search("deploy", limit: 5), "search --limit")
+        try check(CASParser.parse(["search"]) == .help(exitCode: 1), "search needs text")
+        try check(CASParser.parse(["search", "x", "--limit", "0"]) == .help(exitCode: 1), "limit must be positive")
+        try check(CASParser.parse(["restore", "abc"]) == .restore("abc", profile: nil), "restore id")
+        try check(CASParser.parse(["restore", "abc", "--profile", "Work"]) == .restore("abc", profile: "Work"), "restore --profile")
+        try check(CASParser.parse(["restore"]) == .help(exitCode: 1), "restore needs id")
+        try check(CASParser.parse(["restore", "a", "b"]) == .help(exitCode: 1), "restore takes one id")
+        try check(CASParser.parse(["db"]) == .db([]), "db")
+        try check(CASParser.parse(["db", "select 1"]) == .db(["select 1"]), "db passes sql through")
     }
 
     static func check(_ condition: Bool, _ message: String) throws {

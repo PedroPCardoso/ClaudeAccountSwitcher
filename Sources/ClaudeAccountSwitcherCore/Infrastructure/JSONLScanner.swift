@@ -40,9 +40,12 @@ enum JSONLScanner {
         var pending = Data()
 
         func emit(_ base: UnsafePointer<UInt8>, _ count: Int) {
-            guard count >= marker.count else { return }
-            let found = marker.withUnsafeBytes { memmem(base, count, $0.baseAddress!, marker.count) }
-            guard found != nil else { return }
+            // Marcador vazio = todas as linhas (cópia de backup do `SessionArchive`).
+            if !marker.isEmpty {
+                guard count >= marker.count else { return }
+                let found = marker.withUnsafeBytes { memmem(base, count, $0.baseAddress!, marker.count) }
+                guard found != nil else { return }
+            }
             // Pool por linha: o `JSONSerialization` devolve objetos Foundation autoreleased que, numa
             // thread de background sem run loop, só seriam liberados no fim da tarefa inteira
             // (centenas de MB acumulados num scan frio).

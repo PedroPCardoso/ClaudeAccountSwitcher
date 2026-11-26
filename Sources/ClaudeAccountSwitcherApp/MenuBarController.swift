@@ -62,6 +62,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var cursorUsageWindowController: CursorUsageWindowController?
     private var cursorAnalysisWindowController: CursorAnalysisWindowController?
     private var usageRefreshTimer: Timer?
+    private var sessionArchiveTimer: Timer?
+    private var isArchivingSessions = false
+    private let sessionArchive: SessionArchive
     private var isRefreshingUsage = false
     private var lastAuthCheck: [UUID: Date] = [:]
     private var lastUsageFetch: [UUID: Date] = [:]
@@ -104,6 +107,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         migration = MigrationService(store: store)
         paseo = PaseoIntegration(appSupport: root)
         activation = ActivationService(store: store, desktopActivator: DesktopAppActivator(client: desktopClient), paseoIntegration: paseo)
+        sessionArchive = SessionArchive(appSupport: root)
         super.init()
     }
 
@@ -147,6 +151,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
         installShortcutMonitor(); rebuildMenu(); refreshProfileMetadata()
         scheduleRefreshTimer()
+        archiveSessions()
         // Tela apagada = ninguém vê a barra de menu nem o alerta: pausa o timer (zero wakeups) e
         // faz um refresh ao acordar. Idem para a sessão de outro usuário (troca rápida de usuário).
         let workspace = NSWorkspace.shared.notificationCenter
@@ -157,7 +162,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
         for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
             workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.scheduleRefreshTimer(); self?.refreshProfileMetadata() }
+                Task { @MainActor in self?.scheduleRefreshTimer(); self?.refreshProfileMetadata(); self?.archiveSessions() }
             }
         }
         NotificationCenter.default.addObserver(forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main) { [weak self] _ in
@@ -197,11 +202,36 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         timer.tolerance = Self.timerInterval / 6
         RunLoop.main.add(timer, forMode: .common)
         usageRefreshTimer = timer
+
+        sessionArchiveTimer?.invalidate()
+        let archiveTimer = Timer(timeInterval: SessionArchiveSettings.interval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.archiveSessions() }
+        }
+        archiveTimer.tolerance = 30
+        RunLoop.main.add(archiveTimer, forMode: .common)
+        sessionArchiveTimer = archiveTimer
     }
 
     private func pauseRefreshTimer() {
         usageRefreshTimer?.invalidate()
         usageRefreshTimer = nil
+        sessionArchiveTimer?.invalidate()
+        sessionArchiveTimer = nil
+    }
+
+    /// Copia as sessões de todos os perfis para o `sessions.db` (só o que mudou desde a última vez),
+    /// em prioridade de segundo plano. A primeira carga pode levar minutos; ciclos seguintes, ms.
+    private func archiveSessions() {
+        guard SessionArchiveSettings.isEnabled(), !isArchivingSessions, let profiles = try? store.list(), !profiles.isEmpty else { return }
+        isArchivingSessions = true
+        let archive = sessionArchive
+        Task.detached(priority: .background) { [weak self] in
+            let report = try? archive.sync(profiles: profiles)
+            if let errors = report?.errors, !errors.isEmpty {
+                NSLog("Session archive: %@", errors.prefix(5).joined(separator: " | "))
+            }
+            await MainActor.run { self?.isArchivingSessions = false }
+        }
     }
 
     private func releaseClosedWindow(_ id: ObjectIdentifier) {

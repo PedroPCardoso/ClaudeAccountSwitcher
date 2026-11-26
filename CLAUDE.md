@@ -36,6 +36,10 @@ Componentes de produto (ver specs para detalhes de design):
   configurado para o alerta de 5h (`fiveHourAlertSoundName`).
 - Alerta de orçamento do Cursor: `CursorBudgetAlertTracker` dispara 1× por ciclo de faturamento
   quando o % usado (spend/limit) cruza o limiar (default 80%). Reusa o som do alerta de 5h.
+- **Cópia local das sessões:** `SessionArchive` copia a cada 5 min todo `.jsonl` de `projects/`
+  (inclusive subagentes) de todos os perfis para `sessions.db` (SQLite), incremental, sem nunca
+  apagar — sobrevive à limpeza de 30 dias do CLI. Consultas pelo `cas search|restore|db|sync`.
+  Spec: `docs/superpowers/specs/2026-11-26-session-archive-design.md`.
 - Integração opcional com Paseo: `PaseoIntegration` mantém um symlink estável apontando para o
   diretório de config do perfil ativo, porque o daemon do Paseo resolve `CLAUDE_CONFIG_DIR` uma
   vez no spawn e nunca relê `launchctl setenv`.
@@ -102,6 +106,10 @@ Caminho base: raiz do repositório.
 - `ActiveStateRepair.swift` — `suggestion(profiles:launchdDirectory:)`: perfil a restaurar quando
   `active-profile.json` está corrompido (casa com o `CLAUDE_CONFIG_DIR` do launchd, senão o
   `lastUsedAt` mais recente). Usado pelo item "reparar…" do menu.
+- `SessionArchiveModel.swift` — `SessionFileLocation.parse` (caminho relativo → sessão/subagente),
+  `SessionLineParser.parse` (linha `user`/`assistant` → `SessionMessageRecord`: ids, cwd, modelo,
+  tokens e só o texto dos blocos `text`), `SessionSearchQuery.ftsExpression` (texto → FTS5 seguro),
+  `SessionArchiveSettings` (chave `sessionArchiveEnabled`, intervalo de 300 s).
 - `ProfileResolver.swift` — `resolve(_:query:)` do CLI `cas` (match exato nome/email →
   found/notFound/ambiguous, issue #35).
 - `CASCommand.swift` — `CASParser.parse`/`CASCommand`: parsing/dispatch do CLI `cas` com exit code,
@@ -143,6 +151,15 @@ Caminho base: raiz do repositório.
   `autoreleasepool` ali é obrigatório — sem ele o `FileHandle.read`/`JSONSerialization` acumulam
   centenas de MB numa thread de background até o fim da tarefa (medido: pico 504 MB → 27 MB em 670 MB
   de logs; 33 s → 5,7 s na leitura fria; append de 1 linha em sessão de 21 MB: 1,1 s → 1 ms).
+- `SQLiteDatabase.swift` — wrapper mínimo da libsqlite3 (`prepare`/`bind`/`step`, `transaction` com
+  `BEGIN IMMEDIATE`, busy timeout de 15 s). Não é thread-safe: uma conexão por chamada.
+- `SessionArchive.swift` — `sessions.db` no root do app: `sync(profiles:)` incremental por arquivo
+  (offset + impressão digital dos primeiros 512 bytes, transação por arquivo, segura com app e `cas`
+  ao mesmo tempo); bytes crus em `chunks` de ~1 MB lzfse (~5×; concatenar = arquivo exato);
+  `messages` + `messages_fts` (FTS5, só texto de usuário/assistente); visões `v_messages`/`v_sessions`.
+  Arquivo reescrito → nova `revision` (antiga com `superseded_at`); sumido do disco → `deleted_at`.
+  **Nunca apaga nada.** `search`, `candidates(sessionPrefix:)` e `restore` (não sobrescreve arquivo
+  existente). Medido: 1,7 GB / 1.826 arquivos → 419 MB, carga inicial ~2 min, ciclo seguinte ~1,5 s.
 - `UsageHistoryService.swift` — parseia os `.jsonl` de sessão em séries diárias por perfil, com a
   quebra por tipo de token e o custo USD estimado (`ModelPricing`). Deduplica cada
   `message.id:requestId` uma vez, dentro do arquivo E entre arquivos da conta (sessões retomadas);
@@ -215,13 +232,15 @@ Caminho base: raiz do repositório.
   por modelo (Swift Charts), toggles por família.
 
 ### `Sources/CAS/` (executável `cas`, CLI)
-- `main.swift` — companheiro de linha de comando `cas` (`list`/`current`/`switch <nome|email>`),
+- `main.swift` — companheiro de linha de comando `cas` (`list`/`current`/`switch <nome|email>`,
+  e do banco de sessões: `sync`, `search <texto> [--limit N]`, `restore <id> [--profile <alvo>]`,
+  `db [sql]` → `/usr/bin/sqlite3 -readonly`),
   dependente só do Core; reusa `ProfileResolver`/`CASCommand` (Domain) e `ActivationService`
   (`syncDesktopApp: false`). Empacotado em `Contents/MacOS/cas` pelo `build-app.sh` e exposto no
   bin gerenciado via `ShellIntegrationManager.install(..., casBinary:)` (feature 1.3.5, issue #35).
 
 ### `Tests/ClaudeAccountSwitcherTests/`
-- `ProfileStoreTests.swift` — único arquivo de teste do projeto (113 testes). Ver seção de
+- `ProfileStoreTests.swift` — único arquivo de teste do projeto (121 testes). Ver seção de
   convenção de teste abaixo.
 
 ### Outros diretórios
@@ -281,7 +300,8 @@ Vivem em `docs/superpowers/`:
   `2026-07-21-weekly-credits-alert-design.md`, `2026-07-25-cursor-usage-monitoring-design.md`,
   `2026-10-13-shell-env-active-profile-design.md`,
   `2026-10-17-profile-switch-session-safety-design.md` (auditoria de perda/corrupção de sessão na
-  troca de perfil: cenários, correções e melhorias pendentes).
+  troca de perfil: cenários, correções e melhorias pendentes),
+  `2026-11-26-session-archive-design.md` (cópia local das sessões em SQLite).
 - `docs/superpowers/plans/` — planos de implementação task-by-task, formato de nome
   `YYYY-MM-DD-<topico>.md` (sem sufixo `-design`). Confirmados:
   `2026-07-20-native-app-profile-sync.md`, `2026-07-21-weekly-credits-alert.md`.
@@ -307,6 +327,7 @@ Todas em `UserDefaults.standard`, sem suíte/domínio customizado:
 | `analysisSelectedProfileIDs` | `AppPreferences.analysisSelectedProfileIDs` (App/MenuBarController.swift) | [String] (UUIDs) | ausente = todos | Perfis incluídos na análise de uso agregado. Ausência da chave = todos selecionados. Lógica pura em `AnalysisSelection` (Domain/UsageHistory.swift). |
 | `cursorMonitoringEnabled` | `CursorMonitoring.defaultsKey` (Domain/CursorAlert.swift) | Bool | `true` (ausente = on) | Liga/desliga o fetch periódico de uso do Cursor. |
 | `cursorBudgetAlertThreshold` | `CursorBudgetAlertThreshold.defaultsKey` (Domain/CursorAlert.swift) | Double | 80 | Limiar (%) do ciclo de faturamento do Cursor para o alerta de orçamento. |
+| `sessionArchiveEnabled` | `SessionArchiveSettings.defaultsKey` (Domain/SessionArchiveModel.swift) | Bool | `true` (ausente = on) | Liga/desliga a cópia das sessões para `sessions.db` a cada 5 min. |
 
 ## Coisas a confirmar de novo em sessões futuras (podem mudar)
 

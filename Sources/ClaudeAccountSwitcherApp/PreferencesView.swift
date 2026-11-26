@@ -25,6 +25,7 @@ struct PreferencesView: View {
     @AppStorage(StatusBarUsageSource.defaultsKey) private var statusBarSourceRaw: String = StatusBarUsageSource.off.rawValue
     @AppStorage(CursorMonitoring.defaultsKey) private var cursorMonitoringEnabled: Bool = true
     @AppStorage(CursorBudgetAlertThreshold.defaultsKey) private var cursorBudgetThreshold: Double = CursorBudgetAlertThreshold.default
+    @AppStorage(SessionArchiveSettings.defaultsKey) private var sessionArchiveEnabled: Bool = true
 
     var body: some View {
         ScrollView {
@@ -91,6 +92,11 @@ struct PreferencesView: View {
                 .disabled(!relaunchDesktopOnSwitch)
                 .padding(.leading, 20)
                 .help(AppStrings.t("Desativado por padrão: matar o app no meio de uma gravação pode corromper a sessão dele. Sem isto, a troca avisa e pede para fechar manualmente.", "Off by default: killing the app mid-write can corrupt its session. Without this, the switch warns and asks you to close it manually."))
+
+                Toggle(isOn: $sessionArchiveEnabled) {
+                    Text(AppStrings.t("Copiar as sessões de todas as contas para um banco local (a cada 5 min)", "Copy every account's sessions to a local database (every 5 min)"))
+                }
+                .help(AppStrings.t("Guarda cada conversa em sessions.db, mesmo depois que o Claude Code apaga as antigas (30 dias). No terminal: cas search, cas restore e cas db.", "Keeps every conversation in sessions.db, even after Claude Code deletes old ones (30 days). In the terminal: cas search, cas restore and cas db."))
 
                 if CursorMonitoring.featureVisible {
                     Divider()
