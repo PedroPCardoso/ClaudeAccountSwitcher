@@ -1,12 +1,17 @@
-# Claude Account Switcher 1.3.9
+# Claude Account Switcher 1.3.10
 
 <img src="docs/assets/claude-account-switcher-logo.png" alt="Claude Account Switcher logo" width="180">
 
 Native macOS menu bar app for switching between isolated Claude Code profiles. The selected profile applies to new sessions; already-open sessions remain unchanged.
 
-Current release: **1.3.9**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
+Current release: **1.3.10**. The distributed DMG contains a universal Apple Silicon and Intel binary when built on a macOS environment with both targets available.
 
-Direct download: [Claude-Account-Switcher-1.3.9.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/releases/download/v1.3.9/Claude-Account-Switcher-1.3.9.dmg)
+Direct download: [Claude-Account-Switcher-1.3.10.dmg](https://github.com/PedroPCardoso/ClaudeAccountSwitcher/releases/download/v1.3.10/Claude-Account-Switcher-1.3.10.dmg)
+
+### What's new in 1.3.10
+
+- **Local copy of every session.** Claude Code deletes transcripts older than 30 days; the app now copies every session of every account (subagent transcripts included) into a local SQLite database (`sessions.db` in the app's data folder) every 5 minutes. Only new bytes are read on each cycle, nothing is ever deleted from the copy, and rewritten files keep their previous version. Raw sessions are stored in compressed 1 MB blocks (~4× smaller) so they can be restored byte for byte. Toggle in Preferences (on by default).
+- **Search, restore and query from the terminal.** `cas search <text>` searches what you and Claude wrote across every account; `cas restore <id>` puts a deleted session back on disk (never overwriting) and prints the `claude --resume` command; `cas db [sql]` opens the database read-only in `sqlite3` with ready-made `v_sessions`/`v_messages` views; `cas sync` copies right away.
 
 ### What's new in 1.3.9
 

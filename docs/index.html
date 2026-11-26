@@ -268,6 +268,9 @@
   }
   .card h3{font-size:1.05rem; font-weight:600; margin-bottom:9px; letter-spacing:-0.01em;}
   .card p{color:var(--text-dim); font-size:0.93rem; line-height:1.6;}
+  /* Card que ocupa a linha inteira (quantidade ímpar de features no grid). */
+  .card.wide{grid-column:1 / -1; display:flex; gap:20px; align-items:flex-start;}
+  .card.wide .icon{flex:none; margin-bottom:0;}
 
   @media (max-width: 760px){
     .grid3{grid-template-columns:1fr;}
@@ -465,6 +468,13 @@
         <h3>Ações rápidas no menu</h3>
         <p>Refaça o login de qualquer conta ou autentique os MCPs que pedem login direto do ícone da barra de menu — o navegador abre e os tokens ficam isolados por conta, sem abrir o terminal.</p>
       </div>
+      <div class="card wide">
+        <div class="icon" style="background:rgba(53,214,196,0.15); color:var(--teal);">⛁</div>
+        <div>
+        <h3>Cópia local das sessões</h3>
+        <p>A cada 5 min, todas as conversas de todas as contas vão para um banco SQLite local — mesmo depois que o Claude Code apaga as antigas. Busque com <code>cas search</code>, recupere com <code>cas restore</code> e consulte com <code>cas db</code>.</p>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -512,7 +522,7 @@
       <p>Sem conta própria, sem nuvem, sem envio de dados. O app só lê o identificador do perfil ativo e nunca toca em tokens ou no Keychain.</p>
     </div>
     <div class="cta-row" style="justify-content:flex-start;">
-      <a class="btn primary" href="https://github.com/PedroPCardoso/ClaudeAccountSwitcher/releases/download/v1.3.9/Claude-Account-Switcher-1.3.9.dmg">Baixar 1.3.9</a>
+      <a class="btn primary" href="https://github.com/PedroPCardoso/ClaudeAccountSwitcher/releases/download/v1.3.10/Claude-Account-Switcher-1.3.10.dmg">Baixar 1.3.10</a>
       <a class="btn ghost" href="https://github.com/PedroPCardoso/ClaudeAccountSwitcher#readme">Ver instruções de build</a>
     </div>
   </section>
